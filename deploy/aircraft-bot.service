@@ -1,0 +1,19 @@
+[Unit]
+Description=Aircraft Alert Telegram Bot (Polling)
+After=network.target mongod.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/aircraft-bot
+Environment="PATH=/opt/aircraft-bot/venv/bin:/usr/local/bin:/usr/bin"
+EnvironmentFile=/opt/aircraft-bot/.env
+ExecStart=/opt/aircraft-bot/venv/bin/python -m app.main
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

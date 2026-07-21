@@ -1,0 +1,31 @@
+# /etc/systemd/system/aircraft-worker.service
+# =============================================
+# Background worker that polls aircraft data and sends notifications.
+# Runs independently from the webhook server.
+
+[Unit]
+Description=Aircraft Alert Monitor Worker
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/aircraft-bot
+Environment="PATH=/opt/aircraft-bot/venv/bin:/usr/local/bin:/usr/bin"
+ExecStart=/opt/aircraft-bot/venv/bin/python worker.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aircraft-worker
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/aircraft-bot
+
+[Install]
+WantedBy=multi-user.target
