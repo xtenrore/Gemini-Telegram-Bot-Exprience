@@ -404,6 +404,8 @@ class ProviderManager:
             self.opensky,
         ]
 
+        self._type_cache: dict[str, str] = {}
+
     def get_providers_by_names(
         self, names: list[str] | None = None
     ) -> list[AircraftDataProvider]:
@@ -486,51 +488,42 @@ class ProviderManager:
             logger.warning("Provider %s failed: %s", provider.name, exc)
             return []
 
-    @staticmethod
     def _merge_results(
+        self,
         results_by_provider: dict[str, list[NormalizedAircraft]],
     ) -> list[NormalizedAircraft]:
-        """Merge and deduplicate aircraft from all providers.
-
-        When multiple providers report the same aircraft (by icao24),
-        prefer the record that has aircraft_type data (ADSB.lol/fi have it,
-        OpenSky does not).  Also merge in origin_country from OpenSky if
-        the other providers lack it.
-        """
+        """Merge and deduplicate aircraft from all providers with type caching."""
         merged: dict[str, NormalizedAircraft] = {}
+
+        # Update persistent type cache from all provider records
+        for aircraft_list in results_by_provider.values():
+            for ac in aircraft_list:
+                if ac.icao24 and ac.aircraft_type:
+                    self._type_cache[ac.icao24] = ac.aircraft_type.upper()
 
         for provider_name, aircraft_list in results_by_provider.items():
             for ac in aircraft_list:
                 if not ac.has_position:
                     continue
 
+                # Auto-enrich missing aircraft_type from type cache if available
+                if not ac.aircraft_type and ac.icao24 in self._type_cache:
+                    ac = ac.model_copy(update={"aircraft_type": self._type_cache[ac.icao24]})
+
                 existing = merged.get(ac.icao24)
                 if existing is None:
-                    # First time seeing this aircraft
                     merged[ac.icao24] = ac
                 else:
-                    # Merge: prefer the record with more data
-                    # Priority: aircraft_type > origin_country > newer timestamp
                     if ac.aircraft_type and not existing.aircraft_type:
-                        # New record has type data, old doesn't — use new as base
-                        # but keep origin_country from old if new lacks it
                         if not ac.origin_country and existing.origin_country:
-                            ac = ac.model_copy(
-                                update={"origin_country": existing.origin_country}
-                            )
+                            ac = ac.model_copy(update={"origin_country": existing.origin_country})
                         merged[ac.icao24] = ac
                     elif not ac.aircraft_type and existing.aircraft_type:
-                        # Old record has type, new doesn't — keep old but merge country
                         if ac.origin_country and not existing.origin_country:
-                            merged[ac.icao24] = existing.model_copy(
-                                update={"origin_country": ac.origin_country}
-                            )
+                            merged[ac.icao24] = existing.model_copy(update={"origin_country": ac.origin_country})
                     else:
-                        # Both have type or both lack it — merge origin_country
                         if ac.origin_country and not existing.origin_country:
-                            merged[ac.icao24] = existing.model_copy(
-                                update={"origin_country": ac.origin_country}
-                            )
+                            merged[ac.icao24] = existing.model_copy(update={"origin_country": ac.origin_country})
 
         return list(merged.values())
 

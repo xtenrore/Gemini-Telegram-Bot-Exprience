@@ -170,18 +170,8 @@ async def _process_region(geohash_key: str, region_users: list[dict]) -> int:
     During learning, queries ALL providers. Post-learning, queries the union
     of selected provider sets for users in this region.
     """
-    # Determine provider set for this region
-    providers_to_query: set[str] | None = set()
-    for u in region_users:
-        uid = u["user_id"]
-        selected = await provider_learner.get_selected_providers(uid, geohash_key)
-        if selected is None:
-            # User is in learning phase — MUST query all providers
-            providers_to_query = None
-            break
-        providers_to_query.update(selected)
-
-    query_names = list(providers_to_query) if providers_to_query is not None else None
+    # ALWAYS query ALL active providers in parallel on every cycle for 100% detection coverage
+    query_names = None
 
     # Build bounding box covering all users in this region
     boxes = []
@@ -195,7 +185,8 @@ async def _process_region(geohash_key: str, region_users: list[dict]) -> int:
     center_lon = (merged_box[2] + merged_box[3]) / 2
 
     diag_km = haversine(merged_box[0], merged_box[2], merged_box[1], merged_box[3])
-    radius_nm = int(km_to_nautical_miles(diag_km / 2) + 10)
+    # Generous NM buffer (min 50 NM) so fast-flying planes are fetched well before entering zone
+    radius_nm = max(50, int(km_to_nautical_miles(diag_km / 2) + 30))
     radius_nm = min(radius_nm, 250)
 
     # Query providers in parallel
