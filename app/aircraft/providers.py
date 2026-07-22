@@ -400,9 +400,8 @@ class ProviderManager:
         self._all_providers: list[AircraftDataProvider] = [
             self.adsb_lol,
             self.adsb_fi,
-            self.opensky,
             self.airplanes_live,
-            self.adsb_one,
+            self.opensky,
         ]
 
     def get_providers_by_names(

@@ -1,4 +1,4 @@
-"""Telegram Bot entry point using Long Polling (v1.4.3).
+"""Telegram Bot entry point using Long Polling (v1.5).
 
 This completely replaces the FastAPI/Webhook server, meaning we don't need
 open ports, domains, or reverse proxies.
