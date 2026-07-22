@@ -40,27 +40,17 @@ class AIModel:
     errors: int = 0
 
 
-# Models ordered by preference (cascade order)
-_GEMINI_MODELS = [
-    AIModel("gemini-3.1-flash-lite", "gemini", rpm=15, rpd=500,
-            model_id="gemini-2.0-flash-lite"),
-    AIModel("gemini-3.5-flash-lite", "gemini", rpm=15, rpd=500,
-            model_id="gemini-2.0-flash-lite"),
-    AIModel("gemini-2.5-flash-lite", "gemini", rpm=10, rpd=20,
-            model_id="gemini-2.0-flash-lite"),
-    AIModel("gemini-2.5-flash", "gemini", rpm=5, rpd=20,
-            model_id="gemini-2.0-flash-lite"),
-    AIModel("gemini-3-flash", "gemini", rpm=5, rpd=20,
-            model_id="gemini-2.0-flash-lite"),
-    AIModel("gemini-3.5-flash", "gemini", rpm=5, rpd=20,
-            model_id="gemini-2.0-flash-lite"),
-    AIModel("gemini-3.6-flash", "gemini", rpm=5, rpd=20,
-            model_id="gemini-2.0-flash-lite"),
-]
-
+# Models ordered by preference (Groq first for higher RPM and reliability)
 _GROQ_MODELS = [
     AIModel("groq-llama-3.3-70b", "groq", rpm=30, rpd=0,
             model_id="llama-3.3-70b-versatile"),
+]
+
+_GEMINI_MODELS = [
+    AIModel("gemini-2.0-flash-lite", "gemini", rpm=15, rpd=1500,
+            model_id="gemini-2.0-flash-lite"),
+    AIModel("gemini-2.0-flash", "gemini", rpm=15, rpd=1500,
+            model_id="gemini-2.0-flash"),
 ]
 
 
@@ -74,18 +64,19 @@ class AIJudge:
     def __init__(self) -> None:
         self._models: list[AIModel] = []
         self._initialized = False
+        self._last_call_time = 0.0
 
     def initialize(self) -> None:
         """Set up available models based on configured API keys."""
         self._models = []
 
-        if settings.gemini_api_key:
-            self._models.extend(_GEMINI_MODELS)
-            logger.info("AI Judge: %d Gemini models available", len(_GEMINI_MODELS))
-
         if settings.groq_api_key:
             self._models.extend(_GROQ_MODELS)
-            logger.info("AI Judge: Groq models available")
+            logger.info("AI Judge: Groq primary model available (%s)", settings.groq_model)
+
+        if settings.gemini_api_key:
+            self._models.extend(_GEMINI_MODELS)
+            logger.info("AI Judge: %d Gemini fallback model(s) available", len(_GEMINI_MODELS))
 
         if not self._models:
             logger.warning("AI Judge: No AI API keys configured — AI features disabled")

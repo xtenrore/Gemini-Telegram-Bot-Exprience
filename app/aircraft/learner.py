@@ -125,8 +125,8 @@ class ProviderLearner:
             missing = [p for p in all_provider_names if p not in reporting]
             ac = plane_obj_map[icao]
 
-            # If not all providers reported this plane, check for conflict
-            if missing and ai_judge.can_call():
+            # Check AI only for suspicious single-provider detections
+            if len(reporting) == 1 and len(missing) >= 2 and ai_judge.can_call():
                 try:
                     verdict = await ai_judge.judge_conflict(
                         icao24=icao,
