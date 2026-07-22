@@ -56,6 +56,16 @@ async def send_aircraft_notification(
     return await _send_message(user_id, msg, reply_markup=reply_markup)
 
 
+_bot_instance: Bot | None = None
+
+
+def _get_bot() -> Bot:
+    global _bot_instance  # noqa: PLW0603
+    if _bot_instance is None or _bot_instance.token != settings.telegram_bot_token:
+        _bot_instance = Bot(token=settings.telegram_bot_token)
+    return _bot_instance
+
+
 async def _send_message(
     user_id: int,
     text: str,
@@ -64,7 +74,7 @@ async def _send_message(
     """Send a Telegram message with rate limiting and error handling."""
     async with _send_semaphore:
         try:
-            bot = Bot(token=settings.telegram_bot_token)
+            bot = _get_bot()
             await bot.send_message(
                 chat_id=user_id,
                 text=text,
