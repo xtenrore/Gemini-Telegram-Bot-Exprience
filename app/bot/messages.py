@@ -55,7 +55,7 @@ RADIUS_PROMPT = (
     "\n"
     "How many kilometers around your location would you like to monitor?\n"
     "\n"
-    "Please type a number between <b>1</b> and <b>150</b> (e.g., <code>50</code>)."
+    "Please type a number between <b>1</b> and <b>150</b> (e.g., <code>15</code>, <code>20</code>, or <code>50</code>)."
 )
 
 INVALID_RADIUS = (
