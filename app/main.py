@@ -54,32 +54,33 @@ async def main() -> None:
     await app.bot.delete_webhook(drop_pending_updates=True)
 
     logger.info("Starting polling...")
-    while True:
-        try:
-            await app.initialize()
-            await app.start()
-            await app.updater.start_polling(drop_pending_updates=True)
-
-            # Keep the event loop running
-            await asyncio.Event().wait()
-            break
-        except telegram.error.Conflict:
-            logger.warning(
-                "Telegram Conflict: Another instance is running getUpdates. "
-                "Waiting 10 seconds for old instance to terminate..."
-            )
+    try:
+        while True:
             try:
-                if app.updater and app.updater.running:
-                    await app.updater.stop()
-                await app.stop()
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(drop_pending_updates=True)
+
+                # Keep the event loop running
+                await asyncio.Event().wait()
+                break
+            except telegram.error.Conflict:
+                logger.warning(
+                    "Telegram Conflict: Another instance is running getUpdates. "
+                    "Waiting 10 seconds for old instance to terminate..."
+                )
+                try:
+                    if app.updater and app.updater.running:
+                        await app.updater.stop()
+                    await app.stop()
+                except Exception:
+                    pass
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                break
             except Exception:
-                pass
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            break
-        except Exception:
-            logger.exception("Unexpected error in main polling loop")
-            break
+                logger.exception("Unexpected error in main polling loop")
+                break
     finally:
         logger.info("Shutting down bot...")
         try:
