@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # ── Aircraft Data Providers ─────────────────────────────────────────
     adsb_lol_base_url: str = "https://api.adsb.lol/v2"
-    adsb_fi_base_url: str = "https://api.adsb.fi/v2"
+    adsb_fi_base_url: str = "https://opendata.adsb.fi/api/v2"
     opensky_base_url: str = "https://opensky-network.org/api"
     airplanes_live_base_url: str = "https://api.airplanes.live/v2"
     adsb_one_base_url: str = "https://api.adsb.one/v2"

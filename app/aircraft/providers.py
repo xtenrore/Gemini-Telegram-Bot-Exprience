@@ -41,8 +41,10 @@ async def get_http_client() -> httpx.AsyncClient:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36 AircraftAlertBot/1.3"
-            )
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
         }
         _http_client = httpx.AsyncClient(
             headers=headers,
@@ -162,7 +164,7 @@ class ADSBFiProvider(AircraftDataProvider):
 
         resp = await client.get(url)
         if resp.status_code == 404:
-            fallback_url = f"{settings.adsb_fi_base_url}/point/{latitude}/{longitude}/{radius_nm}"
+            fallback_url = f"https://opendata.adsb.fi/api/v3/lat/{latitude}/lon/{longitude}/dist/{radius_nm}"
             resp = await client.get(fallback_url)
 
         resp.raise_for_status()
@@ -242,11 +244,20 @@ class ADSBOneProvider(AircraftDataProvider):
         self.last_request_time = time.monotonic()
         self.request_count += 1
 
-        resp = await client.get(url)
-        resp.raise_for_status()
-        self.last_success_time = time.time()
-        data = resp.json()
-        return parse_adsb_response(data)
+        try:
+            resp = await client.get(url)
+            if resp.status_code in (403, 404, 429):
+                self.error_count += 1
+                self.last_error = f"HTTP {resp.status_code}"
+                return []
+            resp.raise_for_status()
+            self.last_success_time = time.time()
+            data = resp.json()
+            return parse_adsb_response(data)
+        except Exception as exc:
+            self.error_count += 1
+            self.last_error = str(exc)
+            return []
 
 
 # ── OpenSky ──────────────────────────────────────────────────────────────────
