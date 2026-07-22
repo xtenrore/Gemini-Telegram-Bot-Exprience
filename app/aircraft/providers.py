@@ -1,16 +1,16 @@
-"""Aircraft data providers with smart multi-source querying.
+"""Aircraft data providers — 5 sources queried in parallel.
+
+Providers (all free):
+  - ADSB.lol       — unlimited, no rate limit, has type data
+  - ADSB.fi        — unlimited, 2s spacing, has type data
+  - OpenSky        — credit-limited (key rotation), 5s spacing, OAuth2, NO type data
+  - Airplanes.Live — unlimited, 2s spacing, has type data
+  - ADSB.one       — unlimited, 2s spacing, has type data
 
 Strategy:
-  1. Query ALL providers in parallel (respecting each one's rate limits)
-  2. Merge results by icao24 (prefer records with aircraft_type data)
-  3. Score provider coverage per geohash region
-  4. Learn which provider(s) work best for each area
-  5. Prefer unlimited providers (ADSB.lol/fi) over credit-limited OpenSky
-
-Providers:
-  - ADSB.lol  — unlimited, no rate limit, has type data
-  - ADSB.fi   — unlimited, 1 req/s (2s spacing enforced), has type data
-  - OpenSky   — credit-limited (key rotation), 5s spacing, NO type data
+  1. During learning: query ALL 5 providers in parallel
+  2. After learning: query the learned best + reliable set per user
+  3. Merge results by icao24, prefer records with aircraft_type data
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import abc
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -27,7 +26,6 @@ import httpx
 from app.aircraft.api_keys import opensky_key_manager
 from app.aircraft.models import NormalizedAircraft
 from app.config import settings
-from app.database import provider_coverage_col
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +156,88 @@ class ADSBFiProvider(AircraftDataProvider):
         return parse_adsb_response(data)
 
 
+# ── Airplanes.Live ───────────────────────────────────────────────────────────
+
+class AirplanesLiveProvider(AircraftDataProvider):
+    """Community provider — free, no key, 2s spacing, has type data.
+
+    Uses the same v2 API format as ADSB.lol / ADSB.fi.
+    """
+
+    name = "airplanes.live"
+    is_unlimited = True
+    _min_interval: float = 2.0
+
+    def can_request_now(self) -> bool:
+        return (time.monotonic() - self.last_request_time) >= self._min_interval or self.last_request_time == 0.0
+
+    async def get_aircraft_in_area(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_nm: int = 250,
+    ) -> list[NormalizedAircraft]:
+        elapsed = time.monotonic() - self.last_request_time
+        if self.last_request_time > 0 and elapsed < self._min_interval:
+            await asyncio.sleep(self._min_interval - elapsed)
+
+        client = await get_http_client()
+        url = f"{settings.airplanes_live_base_url}/point/{latitude}/{longitude}/{radius_nm}"
+        logger.debug("[%s] GET %s", self.name, url)
+
+        self.last_request_time = time.monotonic()
+        self.request_count += 1
+
+        resp = await client.get(url)
+        resp.raise_for_status()
+        self.last_success_time = time.time()
+        data = resp.json()
+        return parse_adsb_response(data)
+
+
+# ── ADSB.one ─────────────────────────────────────────────────────────────────
+
+class ADSBOneProvider(AircraftDataProvider):
+    """Community provider — free, no key, 2s spacing, has type data.
+
+    Uses the same v2 API format as ADSB.lol / ADSB.fi.
+    """
+
+    name = "adsb.one"
+    is_unlimited = True
+    _min_interval: float = 2.0
+
+    def can_request_now(self) -> bool:
+        return (time.monotonic() - self.last_request_time) >= self._min_interval or self.last_request_time == 0.0
+
+    async def get_aircraft_in_area(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_nm: int = 250,
+    ) -> list[NormalizedAircraft]:
+        elapsed = time.monotonic() - self.last_request_time
+        if self.last_request_time > 0 and elapsed < self._min_interval:
+            await asyncio.sleep(self._min_interval - elapsed)
+
+        client = await get_http_client()
+        url = f"{settings.adsb_one_base_url}/point/{latitude}/{longitude}/{radius_nm}"
+        logger.debug("[%s] GET %s", self.name, url)
+
+        self.last_request_time = time.monotonic()
+        self.request_count += 1
+
+        resp = await client.get(url)
+        resp.raise_for_status()
+        self.last_success_time = time.time()
+        data = resp.json()
+        return parse_adsb_response(data)
+
+
 # ── OpenSky ──────────────────────────────────────────────────────────────────
 
 class OpenSkyProvider(AircraftDataProvider):
-    """Backup provider — credit-limited, key rotation, NO type data in responses."""
+    """Backup provider — credit-limited, OAuth2 key rotation, NO type data."""
 
     name = "opensky"
     is_unlimited = False
@@ -181,8 +257,9 @@ class OpenSkyProvider(AircraftDataProvider):
         longitude: float,
         radius_nm: int = 250,
     ) -> list[NormalizedAircraft]:
-        creds = opensky_key_manager.get_current_credentials()
-        if creds is None:
+        # Get Bearer token via OAuth2
+        token = await opensky_key_manager.get_bearer_token()
+        if token is None:
             logger.debug("[%s] No available credentials — skipping.", self.name)
             return []
 
@@ -201,7 +278,7 @@ class OpenSkyProvider(AircraftDataProvider):
         client = await get_http_client()
         url = f"{settings.opensky_base_url}/states/all"
         params = {"lamin": lamin, "lamax": lamax, "lomin": lomin, "lomax": lomax}
-        auth = creds
+        headers = {"Authorization": f"Bearer {token}"}
         logger.debug("[%s] GET %s params=%s", self.name, url, params)
 
         self._last_mono = time.monotonic()
@@ -209,12 +286,26 @@ class OpenSkyProvider(AircraftDataProvider):
         self.request_count += 1
 
         try:
-            resp = await client.get(url, params=params, auth=auth)
+            resp = await client.get(url, params=params, headers=headers)
+
+            # Handle 401 — token expired, refresh and retry once
+            if resp.status_code == 401:
+                logger.info("[%s] Token expired (401), refreshing...", self.name)
+                new_token = await opensky_key_manager.refresh_current_token()
+                if new_token:
+                    headers = {"Authorization": f"Bearer {new_token}"}
+                    resp = await client.get(url, params=params, headers=headers)
+                else:
+                    self.last_error = "Token refresh failed"
+                    self.error_count += 1
+                    return []
+
             if resp.status_code == 429:
                 opensky_key_manager.mark_rate_limited()
                 self.last_error = "Rate limited (HTTP 429)"
                 self.error_count += 1
                 return []
+
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
@@ -265,72 +356,72 @@ class OpenSkyProvider(AircraftDataProvider):
         return status
 
 
-# ── Provider Manager — smart multi-source ────────────────────────────────────
+# ── Provider Manager ─────────────────────────────────────────────────────────
 
 class ProviderManager:
-    """Query ALL providers in parallel, merge results, and learn coverage.
+    """Query providers in parallel, merge and deduplicate results.
 
-    The manager tracks which providers detect aircraft in each geohash
-    region so it can make increasingly efficient queries over time.
+    During learning phase (per user), all 5 providers are queried.
+    After learning, queries only the user's learned provider set.
     """
-
-    # After this many cycles, we have enough data to determine best providers
-    LEARNING_CYCLES = 10
 
     def __init__(self) -> None:
         self.adsb_lol = ADSBLolProvider()
         self.adsb_fi = ADSBFiProvider()
         self.opensky = OpenSkyProvider()
-        self._providers: list[AircraftDataProvider] = [
+        self.airplanes_live = AirplanesLiveProvider()
+        self.adsb_one = ADSBOneProvider()
+        self._all_providers: list[AircraftDataProvider] = [
             self.adsb_lol,
             self.adsb_fi,
             self.opensky,
+            self.airplanes_live,
+            self.adsb_one,
         ]
-        # In-memory coverage scores: geohash -> {provider_name: plane_count}
-        self._coverage_scores: dict[str, dict[str, int]] = {}
-        self._cycle_count: dict[str, int] = {}  # geohash -> cycles observed
 
-    async def query_all_providers(
+    def get_providers_by_names(
+        self, names: list[str] | None = None
+    ) -> list[AircraftDataProvider]:
+        """Return providers filtered by name list, or all if None."""
+        if names is None:
+            return list(self._all_providers)
+        name_set = set(names)
+        return [p for p in self._all_providers if p.name in name_set]
+
+    async def query_providers(
         self,
         latitude: float,
         longitude: float,
         radius_nm: int = 250,
-        geohash: str = "",
-    ) -> list[NormalizedAircraft]:
-        """Query all available providers, merge and deduplicate results.
+        provider_names: list[str] | None = None,
+    ) -> tuple[list[NormalizedAircraft], dict[str, list[NormalizedAircraft]]]:
+        """Query specified providers (or all), merge and return results.
 
-        Returns a merged list of aircraft from all sources.
-        Also updates coverage scoring for the given geohash region.
+        Returns:
+            Tuple of (merged_aircraft_list, results_by_provider_name)
         """
-        # Determine which providers to query this cycle
-        providers_to_query = self._select_providers(geohash)
+        providers_to_query = self.get_providers_by_names(provider_names)
 
         # Query in parallel
         tasks = []
-        provider_names = []
+        queried_names = []
         for provider in providers_to_query:
             if not provider.can_request_now():
                 logger.debug("Skipping %s (rate limit window)", provider.name)
                 continue
             tasks.append(self._safe_query(provider, latitude, longitude, radius_nm))
-            provider_names.append(provider.name)
+            queried_names.append(provider.name)
 
         if not tasks:
             logger.warning("No providers available for this cycle.")
-            return []
+            return [], {}
 
         results = await asyncio.gather(*tasks)
 
-        # Build results-by-provider dict for coverage scoring
+        # Build results-by-provider dict
         results_by_provider: dict[str, list[NormalizedAircraft]] = {}
-        for name, aircraft_list in zip(provider_names, results):
+        for name, aircraft_list in zip(queried_names, results):
             results_by_provider[name] = aircraft_list
-
-        # Update coverage scores
-        if geohash:
-            self._update_coverage(geohash, results_by_provider)
-            # Persist to database (fire-and-forget)
-            asyncio.create_task(self._persist_coverage(geohash))
 
         # Merge all results
         merged = self._merge_results(results_by_provider)
@@ -343,46 +434,7 @@ class ProviderManager:
             len(merged),
         )
 
-        return merged
-
-    def _select_providers(self, geohash: str) -> list[AircraftDataProvider]:
-        """Choose which providers to query based on learned coverage.
-
-        During learning phase (first N cycles), query ALL providers.
-        After learning, prioritize based on coverage scores but still
-        include supplementary providers occasionally.
-        """
-        cycles = self._cycle_count.get(geohash, 0)
-
-        if cycles < self.LEARNING_CYCLES:
-            # Learning phase: query everything
-            return list(self._providers)
-
-        # Post-learning: check coverage scores
-        scores = self._coverage_scores.get(geohash, {})
-        if not scores:
-            return list(self._providers)
-
-        # Always include unlimited providers that have coverage
-        selected: list[AircraftDataProvider] = []
-        for p in self._providers:
-            p_score = scores.get(p.name, 0)
-            if p.is_unlimited and p_score > 0:
-                selected.append(p)
-
-        # Include OpenSky only if it uniquely detects planes the others miss
-        opensky_score = scores.get("opensky", 0)
-        unlimited_total = sum(scores.get(p.name, 0) for p in self._providers if p.is_unlimited)
-        if opensky_score > 0 and opensky_score > unlimited_total * 0.1:
-            # OpenSky detects >10% more planes than unlimited providers
-            if self.opensky not in selected:
-                selected.append(self.opensky)
-
-        # Every 5th cycle, query all providers to re-calibrate
-        if cycles % 5 == 0:
-            return list(self._providers)
-
-        return selected if selected else list(self._providers)
+        return merged, results_by_provider
 
     async def _safe_query(
         self,
@@ -452,80 +504,15 @@ class ProviderManager:
 
         return list(merged.values())
 
-    def _update_coverage(
-        self,
-        geohash: str,
-        results_by_provider: dict[str, list[NormalizedAircraft]],
-    ) -> None:
-        """Update in-memory coverage scores for a region."""
-        if geohash not in self._coverage_scores:
-            self._coverage_scores[geohash] = {}
-            self._cycle_count[geohash] = 0
-
-        self._cycle_count[geohash] += 1
-
-        for provider_name, aircraft_list in results_by_provider.items():
-            # Count unique icao24s with valid positions
-            unique_ids = {ac.icao24 for ac in aircraft_list if ac.has_position}
-            current = self._coverage_scores[geohash].get(provider_name, 0)
-            # Exponential moving average to adapt over time
-            alpha = 0.3
-            self._coverage_scores[geohash][provider_name] = int(
-                alpha * len(unique_ids) + (1 - alpha) * current
-            )
-
-    async def _persist_coverage(self, geohash: str) -> None:
-        """Save coverage scores to MongoDB for persistence across restarts."""
-        try:
-            scores = self._coverage_scores.get(geohash, {})
-            cycles = self._cycle_count.get(geohash, 0)
-            await provider_coverage_col().update_one(
-                {"geohash": geohash},
-                {
-                    "$set": {
-                        "scores": scores,
-                        "cycles": cycles,
-                        "updated_at": datetime.now(timezone.utc),
-                    }
-                },
-                upsert=True,
-            )
-        except Exception:
-            logger.debug("Failed to persist coverage for %s", geohash)
-
-    async def load_coverage_from_db(self) -> None:
-        """Load persisted coverage scores from MongoDB on startup."""
-        try:
-            cursor = provider_coverage_col().find({})
-            async for doc in cursor:
-                gh = doc.get("geohash", "")
-                if gh:
-                    self._coverage_scores[gh] = doc.get("scores", {})
-                    self._cycle_count[gh] = doc.get("cycles", 0)
-            logger.info(
-                "Loaded coverage data for %d region(s) from database.",
-                len(self._coverage_scores),
-            )
-        except Exception:
-            logger.debug("No existing coverage data found in database.")
-
     def get_all_provider_status(self) -> list[dict[str, Any]]:
         """Return status dicts for all providers (for admin dashboard)."""
-        return [p.get_status() for p in self._providers]
-
-    def get_coverage_summary(self) -> dict[str, Any]:
-        """Return coverage score summary for admin dashboard."""
-        return {
-            "regions_tracked": len(self._coverage_scores),
-            "scores": dict(self._coverage_scores),
-            "cycles": dict(self._cycle_count),
-        }
+        return [p.get_status() for p in self._all_providers]
 
 
 # ── Response parsing ─────────────────────────────────────────────────────────
 
 def parse_adsb_response(data: dict[str, Any]) -> list[NormalizedAircraft]:
-    """Parse the ADSB.lol / ADSB.fi v2 JSON response format."""
+    """Parse the ADSB.lol / ADSB.fi / Airplanes.Live / ADSB.one v2 JSON response."""
     aircraft_list: list[NormalizedAircraft] = []
     for ac in data.get("ac", []):
         try:

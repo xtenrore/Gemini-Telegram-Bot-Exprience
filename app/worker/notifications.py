@@ -1,4 +1,4 @@
-"""Notification sending with rate limiting and error handling.
+"""Notification sending with rate limiting, feedback buttons, and error handling.
 
 Handles sending Telegram messages to users and gracefully handles
 blocked-bot errors by marking users inactive.
@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from telegram import Bot
+from telegram import Bot, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
 
 from app.aircraft.models import NormalizedAircraft
+from app.bot.keyboards import notification_feedback_keyboard
 from app.bot.messages import aircraft_alert_message
 from app.config import settings
 from app.database import users_col
@@ -21,7 +22,6 @@ from app.database import users_col
 logger = logging.getLogger(__name__)
 
 # Simple rate limiter: max messages per second to avoid Telegram limits.
-# Telegram allows ~30 messages/s globally, we stay well under.
 _send_semaphore = asyncio.Semaphore(20)
 _MIN_SEND_INTERVAL = 0.05  # 50ms between sends
 
@@ -30,8 +30,9 @@ async def send_aircraft_notification(
     user_id: int,
     aircraft: NormalizedAircraft,
     distance_km: float,
+    notification_id: str = "",
 ) -> bool:
-    """Send an aircraft alert to a user.
+    """Send an aircraft alert to a user with feedback buttons.
 
     Returns ``True`` if the message was sent successfully.
     """
@@ -46,10 +47,20 @@ async def send_aircraft_notification(
         origin_country=aircraft.origin_country,
     )
 
-    return await _send_message(user_id, msg)
+    reply_markup = (
+        notification_feedback_keyboard(notification_id)
+        if notification_id
+        else None
+    )
+
+    return await _send_message(user_id, msg, reply_markup=reply_markup)
 
 
-async def _send_message(user_id: int, text: str) -> bool:
+async def _send_message(
+    user_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
     """Send a Telegram message with rate limiting and error handling."""
     async with _send_semaphore:
         try:
@@ -59,6 +70,7 @@ async def _send_message(user_id: int, text: str) -> bool:
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
+                reply_markup=reply_markup,
             )
             logger.info("Notification sent to user %d", user_id)
             await asyncio.sleep(_MIN_SEND_INTERVAL)

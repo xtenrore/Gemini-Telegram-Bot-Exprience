@@ -28,12 +28,16 @@ from app.aircraft.categories import (
     get_all_types_for_categories,
     validate_icao_code,
 )
+from app.aircraft.learner import provider_learner
+from app.bot.feedback import handle_feedback_callback
 from app.bot.keyboards import (
     CB_ACCEPT_TERMS,
     CB_ADD_CUSTOM,
     CB_CANCEL,
     CB_CATEGORY_PREFIX,
     CB_DONE,
+    CB_FB_DISLIKE_PREFIX,
+    CB_FB_LIKE_PREFIX,
     CB_SKIP_LOCATION,
     aircraft_categories_keyboard,
     skip_location_keyboard,
@@ -260,6 +264,8 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _on_add_custom(update, user.id)
     elif data == CB_SKIP_LOCATION:
         await _on_skip_location(update, user.id)
+    elif data.startswith(CB_FB_LIKE_PREFIX) or data.startswith(CB_FB_DISLIKE_PREFIX):
+        await handle_feedback_callback(update)
 
 
 async def _on_accept_terms(update: Update, user_id: int) -> None:
@@ -404,13 +410,14 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     state = await get_user_state(user.id)
-    if state != UserState.WAITING_LOCATION:
-        # Accept location updates even outside setup flow
-        pass
 
     lat = msg.location.latitude
     lon = msg.location.longitude
     gh = compute_geohash(lat, lon)
+
+    # Check for existing location to detect location change
+    old_loc = await locations_col().find_one({"user_id": user.id})
+    old_gh = old_loc.get("geohash", "") if old_loc else ""
 
     # Save location (do not overwrite existing radius_km if updating)
     await locations_col().update_one(
@@ -428,6 +435,10 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         },
         upsert=True,
     )
+
+    # If user changed location, check and reset learning for new region
+    if old_gh and old_gh != gh:
+        await provider_learner.check_and_handle_location_change(user.id, old_gh, gh)
 
     # Confirm
     await msg.reply_text(

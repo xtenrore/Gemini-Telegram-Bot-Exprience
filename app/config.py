@@ -26,14 +26,33 @@ class Settings(BaseSettings):
     adsb_lol_base_url: str = "https://api.adsb.lol/v2"
     adsb_fi_base_url: str = "https://api.adsb.fi/v2"
     opensky_base_url: str = "https://opensky-network.org/api"
+    airplanes_live_base_url: str = "https://api.airplanes.live/v2"
+    adsb_one_base_url: str = "https://api.adsb.one/v2"
+
+    # OpenSky OAuth2 token endpoint
+    opensky_token_url: str = (
+        "https://auth.opensky-network.org/auth/realms/"
+        "opensky-network/protocol/openid-connect/token"
+    )
 
     # OpenSky API keys directory (contains .json credential files)
     api_keys_dir: str = "api"
 
+    # ── AI Providers ───────────────────────────────────────────────────
+    gemini_api_key: str = ""
+    gemini_model_primary: str = "gemini-2.0-flash-lite"
+    gemini_model_secondary: str = "gemini-2.0-flash-lite"
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
+
     # ── Monitoring ──────────────────────────────────────────────────────
-    poll_interval_seconds: int = 45
+    poll_interval_seconds: int = 10
     default_radius_km: float = 50.0
     cooldown_minutes: int = 30
+
+    # ── Learning ────────────────────────────────────────────────────────
+    learning_plane_threshold: int = 100  # planes to observe before selecting providers
+    relearn_plane_count: int = 25  # extra planes on dislike feedback
 
     # ── Admin ───────────────────────────────────────────────────────────
     admin_telegram_id: int | None = None

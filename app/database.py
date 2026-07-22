@@ -78,8 +78,16 @@ def user_state_col() -> AsyncIOMotorCollection:
     return get_db()["user_state"]
 
 
-def provider_coverage_col() -> AsyncIOMotorCollection:
-    return get_db()["provider_coverage"]
+def provider_learning_col() -> AsyncIOMotorCollection:
+    return get_db()["provider_learning"]
+
+
+def ai_usage_col() -> AsyncIOMotorCollection:
+    return get_db()["ai_usage"]
+
+
+def feedback_col() -> AsyncIOMotorCollection:
+    return get_db()["feedback"]
 
 
 # ── Index creation ──────────────────────────────────────────────────────────
@@ -109,7 +117,17 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
         "cooldown_until", expireAfterSeconds=86400
     )
 
-    # provider_coverage – tracks which providers cover which regions
-    await db["provider_coverage"].create_index("geohash", unique=True)
+    # provider_learning – tracks per-user provider selection and learning progress
+    await db["provider_learning"].create_index(
+        [("user_id", 1), ("geohash", 1)], unique=True
+    )
+    await db["provider_learning"].create_index("user_id")
+
+    # ai_usage – tracks daily AI usage per model
+    await db["ai_usage"].create_index([("model_name", 1), ("day", 1)], unique=True)
+
+    # feedback – tracks user likes/dislikes on notifications
+    await db["feedback"].create_index([("user_id", 1), ("notification_id", 1)])
+    await db["feedback"].create_index("user_id")
 
     logger.info("Database indexes ready.")

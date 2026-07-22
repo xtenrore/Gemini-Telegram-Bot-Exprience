@@ -16,6 +16,8 @@ CB_CATEGORY_PREFIX = "cat:"      # followed by category name
 CB_DONE = "setup:done"
 CB_ADD_CUSTOM = "setup:custom"
 CB_SKIP_LOCATION = "loc:skip"
+CB_FB_LIKE_PREFIX = "fb:like:"   # followed by notification_id
+CB_FB_DISLIKE_PREFIX = "fb:dis:" # followed by notification_id
 
 
 # ── Keyboards ────────────────────────────────────────────────────────────────
@@ -76,5 +78,23 @@ def skip_location_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("⏭️ Skip for now", callback_data=CB_SKIP_LOCATION)]
+        ]
+    )
+
+
+def notification_feedback_keyboard(notification_id: str) -> InlineKeyboardMarkup:
+    """Like / Dislike feedback buttons for aircraft notification alerts."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "👍 Helpful",
+                    callback_data=f"{CB_FB_LIKE_PREFIX}{notification_id}",
+                ),
+                InlineKeyboardButton(
+                    "👎 Not Helpful / Wrong",
+                    callback_data=f"{CB_FB_DISLIKE_PREFIX}{notification_id}",
+                ),
+            ]
         ]
     )

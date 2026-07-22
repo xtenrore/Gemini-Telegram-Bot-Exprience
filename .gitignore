@@ -2,6 +2,7 @@
 .env
 *.pem
 *.key
+groq.txt
 
 # Python
 __pycache__/

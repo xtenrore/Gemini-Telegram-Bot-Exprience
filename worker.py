@@ -1,8 +1,7 @@
 """Standalone background worker entry-point.
 
-Run this as a separate process (systemd service) alongside the FastAPI
-webhook server.  It uses APScheduler to poll aircraft data at a fixed
-interval and send notifications to matching users.
+It uses APScheduler to poll aircraft data at a fixed interval and send
+notifications to matching users.
 
 Usage:
     python worker.py
@@ -18,10 +17,10 @@ import sys
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.aircraft.api_keys import opensky_key_manager
+from app.aircraft.providers import close_http_client
 from app.config import settings
 from app.database import close_db, connect_db
-from app.aircraft.providers import close_http_client
-from app.worker.monitor import init_provider_manager, run_monitor_cycle
+from app.worker.monitor import init_services, run_monitor_cycle
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +47,8 @@ async def main() -> None:
     key_count = opensky_key_manager.load_keys()
     logger.info("OpenSky key manager: %d key(s) available.", key_count)
 
-    # Load cached provider coverage data
-    await init_provider_manager()
+    # Initialise AI and background services
+    await init_services()
 
     # Set up the scheduler
     scheduler = AsyncIOScheduler()

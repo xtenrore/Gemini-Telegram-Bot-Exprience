@@ -14,13 +14,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from app.aircraft.ai_judge import ai_judge
 from app.aircraft.api_keys import opensky_key_manager
 from app.config import settings
 from app.database import (
+    ai_usage_col,
+    feedback_col,
     locations_col,
     notification_history_col,
     preferences_col,
-    provider_coverage_col,
+    provider_learning_col,
     users_col,
 )
 from app.worker.monitor import get_cycle_stats, get_provider_manager
@@ -77,6 +80,7 @@ async def admin_overview(_: None = Depends(_check_auth)) -> dict[str, Any]:
         "memory_mb": round(mem_mb, 1),
         "python_version": platform.python_version(),
         "cycle_stats": cycle_stats,
+        "ai_status": ai_judge.get_usage_report(),
     }
 
 
@@ -143,11 +147,11 @@ async def admin_toggle_user(
 
 @admin_router.get("/providers")
 async def admin_providers(_: None = Depends(_check_auth)) -> dict[str, Any]:
-    """Provider health, request counts, and coverage scores."""
+    """Provider health and request counts."""
     pm = get_provider_manager()
     return {
         "providers": pm.get_all_provider_status(),
-        "coverage": pm.get_coverage_summary(),
+        "ai_usage": ai_judge.get_usage_report(),
     }
 
 
@@ -212,7 +216,8 @@ async def admin_system(_: None = Depends(_check_auth)) -> dict[str, Any]:
             "locations": await locations_col().count_documents({}),
             "preferences": await preferences_col().count_documents({}),
             "notifications": await notification_history_col().count_documents({}),
-            "coverage_regions": await provider_coverage_col().count_documents({}),
+            "learning_records": await provider_learning_col().count_documents({}),
+            "feedback_records": await feedback_col().count_documents({}),
         }
     except Exception:
         db_stats = {"error": "Could not fetch DB stats"}
@@ -223,6 +228,7 @@ async def admin_system(_: None = Depends(_check_auth)) -> dict[str, Any]:
         "uptime_seconds": round(time.time() - _start_time, 1),
         "worker": cycle_stats,
         "database": db_stats,
+        "ai": ai_judge.get_usage_report(),
         "config": {
             "poll_interval_seconds": settings.poll_interval_seconds,
             "default_radius_km": settings.default_radius_km,

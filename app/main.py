@@ -16,7 +16,7 @@ from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
 from app.config import settings
 from app.database import close_db, connect_db
-from app.worker.monitor import init_provider_manager
+from app.worker.monitor import init_services
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ async def main() -> None:
     key_count = opensky_key_manager.load_keys()
     logger.info("OpenSky key manager: %d key(s) available.", key_count)
 
-    # Load cached provider coverage data
-    await init_provider_manager()
+    # Initialise AI and background services
+    await init_services()
 
     # Build Telegram bot application
     app = (
@@ -58,7 +58,7 @@ async def main() -> None:
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
-        
+
         # Keep the event loop running
         await asyncio.Event().wait()
     except asyncio.CancelledError:
