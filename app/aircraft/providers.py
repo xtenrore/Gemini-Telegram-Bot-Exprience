@@ -263,7 +263,11 @@ class ADSBOneProvider(AircraftDataProvider):
 # ── OpenSky ──────────────────────────────────────────────────────────────────
 
 class OpenSkyProvider(AircraftDataProvider):
-    """Backup provider — credit-limited, OAuth2 key rotation, NO type data."""
+    """Backup provider — credit-limited, OAuth2 key rotation, NO type data.
+
+    OpenSky never provides aircraft_type, so it only adds origin_country.
+    It's kept as a low-priority fallback behind the 3 community providers.
+    """
 
     name = "opensky"
     is_unlimited = False
@@ -401,7 +405,8 @@ class ProviderManager:
             self.adsb_lol,
             self.adsb_fi,
             self.airplanes_live,
-            self.opensky,
+            # OpenSky is low priority: no aircraft_type data, slow OAuth2,
+            # and its token often fails on Render. Keep it last.
         ]
 
         self._type_cache: dict[str, str] = {}
