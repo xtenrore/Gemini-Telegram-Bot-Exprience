@@ -31,6 +31,7 @@ async def send_aircraft_notification(
     aircraft: NormalizedAircraft,
     distance_km: float,
     notification_id: str = "",
+    eta_seconds: float | None = None,
 ) -> bool:
     """Send an aircraft alert to a user with feedback buttons.
 
@@ -45,6 +46,7 @@ async def send_aircraft_notification(
         heading=aircraft.heading,
         icao24=aircraft.icao24,
         origin_country=aircraft.origin_country,
+        eta_seconds=eta_seconds,
     )
 
     reply_markup = (

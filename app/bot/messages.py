@@ -201,9 +201,13 @@ def aircraft_alert_message(
     heading: float | None,
     icao24: str,
     origin_country: str,
+    eta_seconds: float | None = None,
 ) -> str:
     """Format an aircraft notification message."""
-    lines = ["✈️ <b>Aircraft Alert!</b>\n"]
+    if eta_seconds is not None and eta_seconds > 0:
+        lines = [f"🚀 <b>Early Warning Alert!</b> (Arriving in ~{int(eta_seconds)}s)\n"]
+    else:
+        lines = ["✈️ <b>Aircraft Alert!</b>\n"]
 
     lines.append(f"<b>Type:</b> <code>{aircraft_type or 'Unknown'}</code>")
     if callsign:

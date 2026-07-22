@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
+    # ── Predictor Microservice (VM 2) ─────────────────────────
+    predictor_service_url: str = ""  # e.g. "https://your-vm2-predictor.onrender.com/predict"
+
     # ── Monitoring ──────────────────────────────────────────────────────
     poll_interval_seconds: int = 10
     default_radius_km: float = 15.0

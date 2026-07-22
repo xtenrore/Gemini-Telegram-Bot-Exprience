@@ -173,11 +173,11 @@ async def _process_region(geohash_key: str, region_users: list[dict]) -> int:
     # ALWAYS query ALL active providers in parallel on every cycle for 100% detection coverage
     query_names = None
 
-    # Build bounding box covering all users in this region
+    # Build bounding box covering all users in this region (with +15km early warning outer buffer)
     boxes = []
     for u in region_users:
         loc = u["location"]
-        radius = loc.get("radius_km", settings.default_radius_km)
+        radius = loc.get("radius_km", settings.default_radius_km) + 15.0
         boxes.append(bounding_box(loc["latitude"], loc["longitude"], radius))
 
     merged_box = merge_bounding_boxes(boxes)
@@ -222,6 +222,9 @@ async def _process_region(geohash_key: str, region_users: list[dict]) -> int:
     return notification_count
 
 
+from app.worker.predictor_client import predict_aircraft_intercept
+
+
 async def _match_user_aircraft(
     user_data: dict,
     aircraft_list: list,
@@ -252,7 +255,11 @@ async def _match_user_aircraft(
     user_lat = loc["latitude"]
     user_lon = loc["longitude"]
 
-    # Pre-filter aircraft by position (inside user's square) and type match
+    # Extended outer buffer radius (+15km) for early warning trajectory forecasting
+    outer_buffer_km = 15.0
+    search_radius_km = radius_km + outer_buffer_km
+
+    # Pre-filter aircraft by position and type match
     candidates = []
     for ac in aircraft_list:
         if not ac.has_position:
@@ -265,19 +272,39 @@ async def _match_user_aircraft(
         if not any(ac_type.startswith(prefix) for prefix in watched_prefixes):
             continue
 
-        is_inside, distance = is_within_square_and_circle(
+        is_inside_direct, distance = is_within_square_and_circle(
             user_lat, user_lon, ac.latitude, ac.longitude, radius_km
         )
-        if not is_inside:
-            continue
 
-        candidates.append((ac, distance))
+        eta_seconds = None
+
+        if is_inside_direct:
+            candidates.append((ac, distance, eta_seconds))
+        else:
+            # Check if within outer buffer for early warning prediction
+            is_in_outer_buffer, outer_dist = is_within_square_and_circle(
+                user_lat, user_lon, ac.latitude, ac.longitude, search_radius_km
+            )
+            if is_in_outer_buffer:
+                # Try trajectory prediction via VM 2 Predictor Microservice
+                prediction = await predict_aircraft_intercept(
+                    aircraft=ac,
+                    user_id=user_id,
+                    user_lat=user_lat,
+                    user_lon=user_lon,
+                    radius_km=radius_km,
+                    buffer_km=outer_buffer_km,
+                )
+                if prediction and prediction.get("should_notify"):
+                    eta_seconds = prediction.get("eta_seconds")
+                    pass_dist = prediction.get("closest_pass_km", outer_dist)
+                    candidates.append((ac, pass_dist, eta_seconds))
 
     if not candidates:
         return 0
 
     # Batch cooldown check: single MongoDB query instead of N queries
-    candidate_icao24s = [ac.icao24 for ac, _ in candidates]
+    candidate_icao24s = [ac.icao24 for ac, _, _ in candidates]
     now = datetime.now(timezone.utc)
     cooldown_cursor = notification_history_col().find(
         {
@@ -290,7 +317,7 @@ async def _match_user_aircraft(
     cooled_down_icaos = {doc["aircraft_icao24"] async for doc in cooldown_cursor}
 
     count = 0
-    for ac, distance in candidates:
+    for ac, distance, eta_seconds in candidates:
         if ac.icao24 in cooled_down_icaos:
             continue
 
@@ -308,6 +335,7 @@ async def _match_user_aircraft(
             aircraft=ac,
             distance_km=distance,
             notification_id=notification_id,
+            eta_seconds=eta_seconds,
         )
 
         if success:
