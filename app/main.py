@@ -22,6 +22,41 @@ from app.worker.monitor import init_services
 logger = logging.getLogger(__name__)
 
 
+async def start_health_check_server() -> asyncio.Server | None:
+    """Start a lightweight HTTP server on $PORT for Render deployment health checks."""
+    import os
+    port = int(os.getenv("PORT", "8000"))
+
+    async def handle_request(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await reader.read(1024)
+            response = (
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/plain\r\n"
+                b"Content-Length: 2\r\n"
+                b"Connection: close\r\n\r\n"
+                b"OK"
+            )
+            writer.write(response)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    try:
+        server = await asyncio.start_server(handle_request, "0.0.0.0", port)
+        logger.info("Health check HTTP server listening on 0.0.0.0:%d", port)
+        return server
+    except Exception as exc:
+        logger.warning("Could not start health check HTTP server on port %d: %s", port, exc)
+        return None
+
+
 async def main() -> None:
     """Run the bot in polling mode."""
     # Configure logging
@@ -41,6 +76,9 @@ async def main() -> None:
 
     # Initialise AI and background services
     await init_services()
+
+    # Start HTTP Health Check Server for Render deployment approval
+    health_server = await start_health_check_server()
 
     # Build Telegram bot application
     app = (
@@ -83,6 +121,12 @@ async def main() -> None:
                 break
     finally:
         logger.info("Shutting down bot...")
+        if health_server:
+            try:
+                health_server.close()
+                await health_server.wait_closed()
+            except Exception:
+                pass
         try:
             if app.updater and app.updater.running:
                 await app.updater.stop()
