@@ -33,13 +33,20 @@ from app.bot.feedback import handle_feedback_callback
 from app.bot.keyboards import (
     CB_ACCEPT_TERMS,
     CB_ADD_CUSTOM,
+    CB_BACK_MAIN,
     CB_CANCEL,
+    CB_CAT_DALL_PREFIX,
+    CB_CAT_SALL_PREFIX,
     CB_CATEGORY_PREFIX,
     CB_DONE,
     CB_FB_DISLIKE_PREFIX,
     CB_FB_LIKE_PREFIX,
+    CB_REMOVE_CUSTOM_PREFIX,
     CB_SKIP_LOCATION,
+    CB_TOGGLE_TYPE_PREFIX,
     aircraft_categories_keyboard,
+    category_types_sub_keyboard,
+    custom_aircraft_keyboard,
     skip_location_keyboard,
     terms_keyboard,
 )
@@ -214,17 +221,22 @@ async def cmd_preferences(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Load existing selections as starting point
     prefs_doc = await preferences_col().find_one({"user_id": user.id})
     selected = set(prefs_doc.get("selected_categories", [])) if prefs_doc else set()
+    disabled = set(prefs_doc.get("disabled_types", [])) if prefs_doc else set()
     custom = prefs_doc.get("custom_aircraft", []) if prefs_doc else []
 
     await set_user_state(
         user.id,
         UserState.WAITING_AIRCRAFT_SELECTION,
-        temp_data={"selected_categories": list(selected), "custom_aircraft": custom},
+        temp_data={
+            "selected_categories": list(selected),
+            "disabled_types": list(disabled),
+            "custom_aircraft": custom,
+        },
     )
     await update.message.reply_text(
         AIRCRAFT_SELECTION_PROMPT,
         parse_mode=ParseMode.HTML,
-        reply_markup=aircraft_categories_keyboard(selected),
+        reply_markup=aircraft_categories_keyboard(selected, disabled, custom),
     )
 
 
@@ -257,9 +269,23 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _on_accept_terms(update, user.id)
     elif data == CB_CANCEL:
         await _on_cancel(update, user.id)
+    elif data == CB_BACK_MAIN:
+        await _on_back_to_main_categories(update, user.id)
     elif data.startswith(CB_CATEGORY_PREFIX):
         category = data[len(CB_CATEGORY_PREFIX):]
-        await _on_toggle_category(update, user.id, category)
+        await _on_open_category_sub(update, user.id, category)
+    elif data.startswith(CB_TOGGLE_TYPE_PREFIX):
+        type_code = data[len(CB_TOGGLE_TYPE_PREFIX):]
+        await _on_toggle_type_code(update, user.id, type_code)
+    elif data.startswith(CB_CAT_SALL_PREFIX):
+        category = data[len(CB_CAT_SALL_PREFIX):]
+        await _on_select_all_in_cat(update, user.id, category)
+    elif data.startswith(CB_CAT_DALL_PREFIX):
+        category = data[len(CB_CAT_DALL_PREFIX):]
+        await _on_deselect_all_in_cat(update, user.id, category)
+    elif data.startswith(CB_REMOVE_CUSTOM_PREFIX):
+        code = data[len(CB_REMOVE_CUSTOM_PREFIX):]
+        await _on_remove_custom_code(update, user.id, code)
     elif data == CB_DONE:
         await _on_setup_done(update, user.id)
     elif data == CB_ADD_CUSTOM:
@@ -295,26 +321,148 @@ async def _on_cancel(update: Update, user_id: int) -> None:
         await query.message.edit_text(CANCEL_MESSAGE, parse_mode=ParseMode.HTML)
 
 
-async def _on_toggle_category(update: Update, user_id: int, category: str) -> None:
-    """Toggle an aircraft category selection."""
+async def _on_open_category_sub(update: Update, user_id: int, category: str) -> None:
+    """Open sub-menu for category aircraft types."""
+    from app.aircraft.categories import AIRCRAFT_CATEGORIES, CATEGORY_ORDER
+
     if category not in CATEGORY_ORDER:
         return
 
     temp = await get_temp_data(user_id)
-    selected: list[str] = temp.get("selected_categories", [])
+    selected_cats: list[str] = temp.get("selected_categories", [])
+    disabled_types: list[str] = temp.get("disabled_types", [])
 
-    if category in selected:
-        selected.remove(category)
+    # If category is not selected yet, select it (enables all types by default)
+    if category not in selected_cats:
+        selected_cats.append(category)
+        all_types = set(AIRCRAFT_CATEGORIES.get(category, []))
+        disabled_types = [t for t in disabled_types if t not in all_types]
+
+    await update_temp_data(
+        user_id,
+        {
+            "selected_categories": selected_cats,
+            "disabled_types": disabled_types,
+            "current_category": category,
+        },
+    )
+
+    query = update.callback_query
+    if query and query.message:
+        await query.message.edit_text(
+            f"✈️ <b>{category} Aircraft Selection</b>\n\n"
+            "Tap any type code to enable (✅) or disable (❌).\n"
+            "When finished, tap <b>⬅️ Back to Categories</b>.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=category_types_sub_keyboard(category, set(disabled_types)),
+        )
+
+
+async def _on_toggle_type_code(update: Update, user_id: int, type_code: str) -> None:
+    """Toggle individual aircraft type in category sub-menu."""
+    temp = await get_temp_data(user_id)
+    category = temp.get("current_category", "")
+    disabled_types: list[str] = temp.get("disabled_types", [])
+
+    if type_code in disabled_types:
+        disabled_types.remove(type_code)
     else:
-        selected.append(category)
+        disabled_types.append(type_code)
 
-    await update_temp_data(user_id, {"selected_categories": selected})
+    await update_temp_data(user_id, {"disabled_types": disabled_types})
 
-    # Update the keyboard to reflect new selection
+    query = update.callback_query
+    if query and query.message and category:
+        await query.message.edit_reply_markup(
+            reply_markup=category_types_sub_keyboard(category, set(disabled_types)),
+        )
+
+
+async def _on_select_all_in_cat(update: Update, user_id: int, category: str) -> None:
+    """Enable all types in category."""
+    from app.aircraft.categories import AIRCRAFT_CATEGORIES
+
+    temp = await get_temp_data(user_id)
+    selected_cats: list[str] = temp.get("selected_categories", [])
+    disabled_types: list[str] = temp.get("disabled_types", [])
+
+    if category not in selected_cats:
+        selected_cats.append(category)
+
+    all_cat_types = set(AIRCRAFT_CATEGORIES.get(category, []))
+    disabled_types = [t for t in disabled_types if t not in all_cat_types]
+
+    await update_temp_data(
+        user_id,
+        {"selected_categories": selected_cats, "disabled_types": disabled_types},
+    )
+
     query = update.callback_query
     if query and query.message:
         await query.message.edit_reply_markup(
-            reply_markup=aircraft_categories_keyboard(set(selected)),
+            reply_markup=category_types_sub_keyboard(category, set(disabled_types)),
+        )
+
+
+async def _on_deselect_all_in_cat(update: Update, user_id: int, category: str) -> None:
+    """Disable all types in category."""
+    from app.aircraft.categories import AIRCRAFT_CATEGORIES
+
+    temp = await get_temp_data(user_id)
+    selected_cats: list[str] = temp.get("selected_categories", [])
+    disabled_types: list[str] = temp.get("disabled_types", [])
+
+    if category in selected_cats:
+        selected_cats.remove(category)
+
+    all_cat_types = AIRCRAFT_CATEGORIES.get(category, [])
+    for t in all_cat_types:
+        if t not in disabled_types:
+            disabled_types.append(t)
+
+    await update_temp_data(
+        user_id,
+        {"selected_categories": selected_cats, "disabled_types": disabled_types},
+    )
+
+    query = update.callback_query
+    if query and query.message:
+        await query.message.edit_reply_markup(
+            reply_markup=category_types_sub_keyboard(category, set(disabled_types)),
+        )
+
+
+async def _on_back_to_main_categories(update: Update, user_id: int) -> None:
+    """Return to main category selection keyboard."""
+    temp = await get_temp_data(user_id)
+    selected_cats = set(temp.get("selected_categories", []))
+    disabled_types = set(temp.get("disabled_types", []))
+    custom = temp.get("custom_aircraft", [])
+
+    query = update.callback_query
+    if query and query.message:
+        await query.message.edit_text(
+            AIRCRAFT_SELECTION_PROMPT,
+            parse_mode=ParseMode.HTML,
+            reply_markup=aircraft_categories_keyboard(
+                selected_cats, disabled_types, custom
+            ),
+        )
+
+
+async def _on_remove_custom_code(update: Update, user_id: int, code: str) -> None:
+    """Remove a custom ICAO code from custom_aircraft list."""
+    temp = await get_temp_data(user_id)
+    custom: list[str] = temp.get("custom_aircraft", [])
+
+    if code in custom:
+        custom.remove(code)
+        await update_temp_data(user_id, {"custom_aircraft": custom})
+
+    query = update.callback_query
+    if query and query.message:
+        await query.message.edit_reply_markup(
+            reply_markup=custom_aircraft_keyboard(custom)
         )
 
 
@@ -322,6 +470,7 @@ async def _on_setup_done(update: Update, user_id: int) -> None:
     """User finished aircraft selection — finalise setup."""
     temp = await get_temp_data(user_id)
     selected_cats: list[str] = temp.get("selected_categories", [])
+    disabled_types: list[str] = temp.get("disabled_types", [])
     custom: list[str] = temp.get("custom_aircraft", [])
 
     if not selected_cats and not custom:
@@ -336,6 +485,7 @@ async def _on_setup_done(update: Update, user_id: int) -> None:
         {
             "$set": {
                 "selected_categories": selected_cats,
+                "disabled_types": disabled_types,
                 "custom_aircraft": custom,
                 "updated_at": datetime.now(timezone.utc),
             }
@@ -371,11 +521,24 @@ async def _on_setup_done(update: Update, user_id: int) -> None:
 
 async def _on_add_custom(update: Update, user_id: int) -> None:
     """Switch to custom aircraft input mode."""
-    await set_user_state(user_id, UserState.ADDING_CUSTOM_AIRCRAFT)
+    temp = await get_temp_data(user_id)
+    custom: list[str] = temp.get("custom_aircraft", [])
+
+    await set_user_state(user_id, UserState.ADDING_CUSTOM_AIRCRAFT, temp_data=temp)
     query = update.callback_query
     if query and query.message:
-        await query.message.reply_text(
-            CUSTOM_AIRCRAFT_PROMPT, parse_mode=ParseMode.HTML
+        prompt_text = (
+            "✏️ <b>Add / Remove Custom Aircraft Code</b>\n\n"
+            "Send an ICAO type code (e.g. <code>B738</code>, <code>A21N</code>):\n"
+            "• If not in your list: it will be <b>added</b> ✅\n"
+            "• If already in your list: it will be <b>removed</b> 🗑️\n\n"
+            "Or tap a 🗑️ button below to remove an existing code.\n\n"
+            "Send <code>done</code> when finished."
+        )
+        await query.message.edit_text(
+            prompt_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=custom_aircraft_keyboard(custom),
         )
 
 
@@ -383,21 +546,26 @@ async def _on_skip_location(update: Update, user_id: int) -> None:
     """Skip location step and go straight to aircraft selection."""
     temp = await get_temp_data(user_id)
     selected = set(temp.get("selected_categories", []))
+    disabled = set(temp.get("disabled_types", []))
     custom = temp.get("custom_aircraft", [])
 
     await set_user_state(
         user_id,
         UserState.WAITING_AIRCRAFT_SELECTION,
-        temp_data={"selected_categories": list(selected), "custom_aircraft": custom},
+        temp_data={
+            "selected_categories": list(selected),
+            "disabled_types": list(disabled),
+            "custom_aircraft": custom,
+        },
     )
 
     query = update.callback_query
     if query and query.message:
         await query.message.edit_text(
-            "⏭️ Location skipped.  You can set it later with /location.\n\n"
+            "⏭️ Location skipped. You can set it later with /location.\n\n"
             + AIRCRAFT_SELECTION_PROMPT,
             parse_mode=ParseMode.HTML,
-            reply_markup=aircraft_categories_keyboard(selected),
+            reply_markup=aircraft_categories_keyboard(selected, disabled, custom),
         )
 
 
@@ -536,17 +704,22 @@ async def _handle_custom_aircraft_input(
     if text.lower() == "done":
         temp = await get_temp_data(user_id)
         selected = set(temp.get("selected_categories", []))
+        disabled = set(temp.get("disabled_types", []))
         custom = temp.get("custom_aircraft", [])
 
         await set_user_state(
             user_id,
             UserState.WAITING_AIRCRAFT_SELECTION,
-            temp_data={"selected_categories": list(selected), "custom_aircraft": custom},
+            temp_data={
+                "selected_categories": list(selected),
+                "disabled_types": list(disabled),
+                "custom_aircraft": custom,
+            },
         )
         await msg.reply_text(
             AIRCRAFT_SELECTION_PROMPT,
             parse_mode=ParseMode.HTML,
-            reply_markup=aircraft_categories_keyboard(selected),
+            reply_markup=aircraft_categories_keyboard(selected, disabled, custom),
         )
         return
 
@@ -557,13 +730,24 @@ async def _handle_custom_aircraft_input(
         )
         return
 
-    # Add to temp custom list (avoid duplicates)
     temp = await get_temp_data(user_id)
     custom: list[str] = temp.get("custom_aircraft", [])
-    if code not in custom:
+
+    if code in custom:
+        custom.remove(code)
+        await update_temp_data(user_id, {"custom_aircraft": custom})
+        await msg.reply_text(
+            f"🗑️ Removed <code>{code}</code> from your custom types.\n"
+            "Send another code, or send <code>done</code> to finish.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=custom_aircraft_keyboard(custom),
+        )
+    else:
         custom.append(code)
         await update_temp_data(user_id, {"custom_aircraft": custom})
-
-    await msg.reply_text(
-        CUSTOM_AIRCRAFT_ADDED.format(code=code), parse_mode=ParseMode.HTML
-    )
+        await msg.reply_text(
+            f"✅ Added <code>{code}</code> to your custom types.\n"
+            "Send another code, or send <code>done</code> to finish.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=custom_aircraft_keyboard(custom),
+        )

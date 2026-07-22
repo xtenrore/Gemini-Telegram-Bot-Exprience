@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # ── Monitoring ──────────────────────────────────────────────────────
     poll_interval_seconds: int = 10
-    default_radius_km: float = 50.0
+    default_radius_km: float = 15.0
     cooldown_minutes: int = 30
 
     # ── Learning ────────────────────────────────────────────────────────

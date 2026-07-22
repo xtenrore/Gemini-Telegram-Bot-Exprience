@@ -35,6 +35,7 @@ from app.database import (
 from app.worker.geo import (
     bounding_box,
     haversine,
+    is_within_square_and_circle,
     km_to_nautical_miles,
     merge_bounding_boxes,
 )
@@ -242,8 +243,15 @@ async def _match_user_aircraft(
     radius_km = loc.get("radius_km", settings.default_radius_km)
 
     selected_cats = prefs.get("selected_categories", [])
+    disabled_types = set(prefs.get("disabled_types", []))
     custom_types = prefs.get("custom_aircraft", [])
-    base_types = get_all_types_for_categories(selected_cats)
+
+    base_types = set()
+    from app.aircraft.categories import AIRCRAFT_CATEGORIES
+    for cat in selected_cats:
+        for t in AIRCRAFT_CATEGORIES.get(cat, []):
+            if t not in disabled_types:
+                base_types.add(t)
     base_types.update(custom_types)
 
     watched_prefixes = resolve_match_prefixes(base_types)
@@ -262,8 +270,10 @@ async def _match_user_aircraft(
         if not ac_type or not any(ac_type.startswith(prefix) for prefix in watched_prefixes):
             continue
 
-        distance = haversine(user_lat, user_lon, ac.latitude, ac.longitude)
-        if distance > radius_km:
+        is_inside, distance = is_within_square_and_circle(
+            user_lat, user_lon, ac.latitude, ac.longitude, radius_km
+        )
+        if not is_inside:
             continue
 
         if await _is_in_cooldown(user_id, ac.icao24):
