@@ -37,7 +37,18 @@ async def get_http_client() -> httpx.AsyncClient:
     """Return (and lazily create) a shared ``httpx.AsyncClient``."""
     global _http_client  # noqa: PLW0603
     if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(15.0))
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36 AircraftAlertBot/1.3"
+            )
+        }
+        _http_client = httpx.AsyncClient(
+            headers=headers,
+            timeout=httpx.Timeout(15.0),
+            follow_redirects=True,
+        )
     return _http_client
 
 
@@ -143,13 +154,17 @@ class ADSBFiProvider(AircraftDataProvider):
             await asyncio.sleep(self._min_interval - elapsed)
 
         client = await get_http_client()
-        url = f"{settings.adsb_fi_base_url}/point/{latitude}/{longitude}/{radius_nm}"
+        url = f"{settings.adsb_fi_base_url}/lat/{latitude}/lon/{longitude}/dist/{radius_nm}"
         logger.debug("[%s] GET %s", self.name, url)
 
         self.last_request_time = time.monotonic()
         self.request_count += 1
 
         resp = await client.get(url)
+        if resp.status_code == 404:
+            fallback_url = f"{settings.adsb_fi_base_url}/point/{latitude}/{longitude}/{radius_nm}"
+            resp = await client.get(fallback_url)
+
         resp.raise_for_status()
         self.last_success_time = time.time()
         data = resp.json()
@@ -450,6 +465,11 @@ class ProviderManager:
                 "Provider %s returned %d aircraft", provider.name, len(result)
             )
             return result
+        except httpx.HTTPStatusError as exc:
+            provider.error_count += 1
+            provider.last_error = f"HTTP {exc.response.status_code}"
+            logger.debug("Provider %s HTTP error %d: %s", provider.name, exc.response.status_code, exc)
+            return []
         except Exception as exc:
             provider.error_count += 1
             provider.last_error = str(exc)

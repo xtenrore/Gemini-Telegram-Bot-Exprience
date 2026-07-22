@@ -171,12 +171,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lat = loc_doc.get("latitude") if loc_doc else None
     lon = loc_doc.get("longitude") if loc_doc else None
 
+    radius = loc_doc.get("radius_km", settings.default_radius_km) if loc_doc else settings.default_radius_km
+
     msg = status_message(
         selected_categories=cats,
         custom_aircraft=custom,
         lat=lat,
         lon=lon,
-        radius_km=settings.default_radius_km,
+        radius_km=radius,
         setup_complete=is_setup,
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -353,13 +355,14 @@ async def _on_setup_done(update: Update, user_id: int) -> None:
     loc_doc = await locations_col().find_one({"user_id": user_id})
     lat = loc_doc["latitude"] if loc_doc else 0.0
     lon = loc_doc["longitude"] if loc_doc else 0.0
+    radius = loc_doc.get("radius_km", settings.default_radius_km) if loc_doc else settings.default_radius_km
 
     msg = setup_complete_message(
         selected_categories=selected_cats,
         custom_aircraft=custom,
         lat=lat,
         lon=lon,
-        radius_km=settings.default_radius_km,
+        radius_km=radius,
     )
     query = update.callback_query
     if query and query.message:
