@@ -34,23 +34,25 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 def is_within_square_and_circle(
     user_lat: float, user_lon: float, ac_lat: float, ac_lon: float, radius_km: float
 ) -> tuple[bool, float]:
-    """Check if point is inside square bounding box (+/- radius_km) and within distance limit.
+    """Check if point is inside a square bounding box (±radius_km on each axis).
 
-    Returns (is_inside, circular_distance_km).
+    Returns (is_inside, distance_km) where distance is haversine for display.
+    The boundary is a pure square — no circular rejection at corners.
     """
     # Latitude difference in km (1° lat ≈ 111.32 km)
     lat_diff_km = abs(ac_lat - user_lat) * 111.32
     if lat_diff_km > radius_km:
-        return False, haversine(user_lat, user_lon, ac_lat, ac_lon)
+        return False, lat_diff_km  # fast reject without expensive haversine
 
     # Longitude difference in km (varies with latitude)
     cos_lat = math.cos(math.radians(user_lat))
     lon_diff_km = abs(ac_lon - user_lon) * (111.32 * cos_lat) if cos_lat > 0 else 0.0
     if lon_diff_km > radius_km:
-        return False, haversine(user_lat, user_lon, ac_lat, ac_lon)
+        return False, lon_diff_km  # fast reject
 
+    # Inside the square — compute actual distance for the notification message
     distance = haversine(user_lat, user_lon, ac_lat, ac_lon)
-    return distance <= radius_km, distance
+    return True, distance
 
 
 def bounding_box(

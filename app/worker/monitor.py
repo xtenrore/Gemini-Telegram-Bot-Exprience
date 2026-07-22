@@ -251,14 +251,18 @@ async def _match_user_aircraft(
 
     user_lat = loc["latitude"]
     user_lon = loc["longitude"]
-    count = 0
 
+    # Pre-filter aircraft by position (inside user's square) and type match
+    candidates = []
     for ac in aircraft_list:
         if not ac.has_position:
             continue
 
-        ac_type = ac.aircraft_type.upper()
-        if not ac_type or not any(ac_type.startswith(prefix) for prefix in watched_prefixes):
+        ac_type = (ac.aircraft_type or "").upper().strip()
+        if not ac_type:
+            continue
+
+        if not any(ac_type.startswith(prefix) for prefix in watched_prefixes):
             continue
 
         is_inside, distance = is_within_square_and_circle(
@@ -267,7 +271,27 @@ async def _match_user_aircraft(
         if not is_inside:
             continue
 
-        if await _is_in_cooldown(user_id, ac.icao24):
+        candidates.append((ac, distance))
+
+    if not candidates:
+        return 0
+
+    # Batch cooldown check: single MongoDB query instead of N queries
+    candidate_icao24s = [ac.icao24 for ac, _ in candidates]
+    now = datetime.now(timezone.utc)
+    cooldown_cursor = notification_history_col().find(
+        {
+            "user_id": user_id,
+            "aircraft_icao24": {"$in": candidate_icao24s},
+            "cooldown_until": {"$gt": now},
+        },
+        {"aircraft_icao24": 1},
+    )
+    cooled_down_icaos = {doc["aircraft_icao24"] async for doc in cooldown_cursor}
+
+    count = 0
+    for ac, distance in candidates:
+        if ac.icao24 in cooled_down_icaos:
             continue
 
         # Generate unique notification ID for feedback tracking

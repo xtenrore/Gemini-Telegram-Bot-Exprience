@@ -186,6 +186,7 @@ def resolve_match_prefixes(types: set[str]) -> set[str]:
     """Expands exact ICAO codes into family prefixes to catch all variants.
     
     E.g., if a user adds 'B738', this ensures it matches all 737 variants (B731-B739).
+    Military types like F16 also match F16A, F16C, F16CM etc.
     """
     prefixes = set()
     for t in types:
@@ -194,32 +195,50 @@ def resolve_match_prefixes(types: set[str]) -> set[str]:
         
         # Boeing families
         if t.startswith("B73"):
-            prefixes.add("B73")
-            prefixes.add("B38M")  # 737 MAX 8
-            prefixes.add("B39M")  # 737 MAX 9
+            prefixes.update(["B73", "B38M", "B39M", "B3XM"])
         elif t.startswith("B74"):
             prefixes.add("B74")
         elif t.startswith("B77"):
-            prefixes.add("B77")
+            prefixes.update(["B77", "B77W", "B77L", "B77F", "B779"])
         elif t.startswith("B78"):
-            prefixes.add("B78")
+            prefixes.update(["B78", "B788", "B789", "B78X"])
             
         # Airbus families
         elif t.startswith("A32") or t.startswith("A31"):
-            # A320 family
-            prefixes.add("A318")
-            prefixes.add("A319")
-            prefixes.add("A320")
-            prefixes.add("A321")
-            prefixes.add("A20N")  # A320neo
-            prefixes.add("A21N")  # A321neo
+            prefixes.update(["A318", "A319", "A320", "A321", "A20N", "A21N"])
         elif t.startswith("A33"):
-            prefixes.add("A33")
+            prefixes.update(["A33", "A332", "A333", "A338", "A339"])
         elif t.startswith("A34"):
-            prefixes.add("A34")
+            prefixes.update(["A34", "A342", "A343", "A345", "A346"])
         elif t.startswith("A35"):
-            prefixes.add("A35")
+            prefixes.update(["A35", "A359", "A35K"])
         elif t.startswith("A38"):
-            prefixes.add("A38")
+            prefixes.update(["A38", "A388"])
+
+        # Military fighters & transports — match all sub-variants
+        elif t.startswith("F16"):
+            prefixes.update(["F16", "F16A", "F16C", "F16CM", "F16D", "F16E"])
+        elif t.startswith("F18") or t.startswith("FA18"):
+            prefixes.update(["F18", "FA18", "F18E", "F18F", "F18G"])
+        elif t.startswith("F35"):
+            prefixes.update(["F35", "F35A", "F35B", "F35C"])
+        elif t.startswith("F22"):
+            prefixes.update(["F22", "F22A"])
+        elif t.startswith("C130") or t.startswith("C30J"):
+            prefixes.update(["C130", "C30J", "L100", "C30"])
+        elif t.startswith("C17"):
+            prefixes.update(["C17", "C17A"])
+        elif t.startswith("B52"):
+            prefixes.update(["B52", "B52H"])
+        elif t.startswith("B1") and len(t) <= 3:
+            prefixes.update(["B1", "B1B"])
+        elif t.startswith("KC"):
+            prefixes.update(["KC10", "KC35", "K35R", "KC46", "K46"])
+        elif t.startswith("E3"):
+            prefixes.update(["E3CF", "E3TF", "E3"])
+
+        # Embraer regional
+        elif t.startswith("E1") or t.startswith("E19"):
+            prefixes.update(["E170", "E175", "E190", "E195", "E75L", "E75S"])
             
     return prefixes
