@@ -12,8 +12,6 @@ from app.aircraft.categories import CATEGORY_EMOJIS, CATEGORY_ORDER
 
 CB_ACCEPT_TERMS = "terms:accept"
 CB_CANCEL = "terms:cancel"
-CB_ACCEPT_TERMS = "terms:accept"
-CB_CANCEL = "terms:cancel"
 CB_CATEGORY_PREFIX = "cat:"         # followed by category name
 CB_TOGGLE_TYPE_PREFIX = "typ:"      # followed by type code
 CB_CAT_SALL_PREFIX = "csall:"       # select all in category
@@ -46,7 +44,7 @@ def aircraft_categories_keyboard(
     disabled_types: set[str] | None = None,
     custom_aircraft: list[str] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Build a grid of category toggle buttons showing selected type counts."""
+    """Build a list of category toggle buttons showing selected type counts."""
     from app.aircraft.categories import AIRCRAFT_CATEGORIES
 
     if selected_cats is None:
@@ -56,7 +54,7 @@ def aircraft_categories_keyboard(
     if custom_aircraft is None:
         custom_aircraft = []
 
-    buttons: list[InlineKeyboardButton] = []
+    rows: list[list[InlineKeyboardButton]] = []
     for name in CATEGORY_ORDER:
         all_types = AIRCRAFT_CATEGORIES.get(name, [])
         total_count = len(all_types)
@@ -67,22 +65,17 @@ def aircraft_categories_keyboard(
             active_count = 0
 
         emoji = CATEGORY_EMOJIS.get(name, "✈️")
-        check = " ✓" if active_count > 0 else ""
-        label = f"{emoji} {name} ({active_count}/{total_count}){check}"
-        buttons.append(
-            InlineKeyboardButton(label, callback_data=f"{CB_CATEGORY_PREFIX}{name}")
+        status_icon = "✅" if active_count > 0 else "❌"
+        label = f"{status_icon} {emoji} {name} ({active_count}/{total_count})"
+        rows.append(
+            [InlineKeyboardButton(label, callback_data=f"{CB_CATEGORY_PREFIX}{name}")]
         )
-
-    # Arrange in 2-column rows
-    rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(buttons), 2):
-        rows.append(buttons[i : i + 2])
 
     # Custom types summary button
     custom_count = len(custom_aircraft)
     custom_label = f"✏️ Custom Types ({custom_count})" if custom_count > 0 else "✏️ Add / Manage Custom Types"
     rows.append([InlineKeyboardButton(custom_label, callback_data=CB_ADD_CUSTOM)])
-    rows.append([InlineKeyboardButton("✅ Done", callback_data=CB_DONE)])
+    rows.append([InlineKeyboardButton("✅ Finish Setup", callback_data=CB_DONE)])
 
     return InlineKeyboardMarkup(rows)
 
@@ -108,10 +101,10 @@ def category_types_sub_keyboard(
             InlineKeyboardButton(label, callback_data=f"{CB_TOGGLE_TYPE_PREFIX}{t}")
         )
 
-    # Arrange in 3-column rows for compact display
+    # Arrange in 2-column rows for clean text fitting on mobile screens
     rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(buttons), 3):
-        rows.append(buttons[i : i + 3])
+    for i in range(0, len(buttons), 2):
+        rows.append(buttons[i : i + 2])
 
     # Select All / Deselect All control row
     rows.append([
@@ -136,9 +129,9 @@ def custom_aircraft_keyboard(custom_list: list[str]) -> InlineKeyboardMarkup:
             delete_buttons.append(
                 InlineKeyboardButton(f"🗑️ {code}", callback_data=f"{CB_REMOVE_CUSTOM_PREFIX}{code}")
             )
-        # Arrange delete buttons in 3-column rows
-        for i in range(0, len(delete_buttons), 3):
-            rows.append(delete_buttons[i : i + 3])
+        # Arrange delete buttons in 2-column rows for clarity
+        for i in range(0, len(delete_buttons), 2):
+            rows.append(delete_buttons[i : i + 2])
 
     rows.append([InlineKeyboardButton("⬅️ Back to Categories", callback_data=CB_BACK_MAIN)])
     return InlineKeyboardMarkup(rows)
