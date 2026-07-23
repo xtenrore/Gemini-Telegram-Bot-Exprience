@@ -222,7 +222,7 @@ async def _process_region(geohash_key: str, region_users: list[dict]) -> int:
     return notification_count
 
 
-from app.worker.predictor_client import predict_aircraft_intercept
+from app.worker.kinematics import evaluate_early_warning
 
 
 async def _match_user_aircraft(
@@ -286,15 +286,23 @@ async def _match_user_aircraft(
                 user_lat, user_lon, ac.latitude, ac.longitude, search_radius_km
             )
             if is_in_outer_buffer:
-                # Try trajectory prediction via VM 2 Predictor Microservice
-                prediction = await predict_aircraft_intercept(
-                    aircraft=ac,
-                    user_id=user_id,
+                # Run trajectory prediction natively (0.1ms overhead)
+                heading = getattr(ac, "track", None) or getattr(ac, "heading", 0.0) or 0.0
+                speed_kts = getattr(ac, "ground_speed", None) or getattr(ac, "speed", 0.0) or 0.0
+                turn_rate = getattr(ac, "turn_rate", 0.0) or 0.0
+                
+                prediction = evaluate_early_warning(
+                    start_lat=ac.latitude,
+                    start_lon=ac.longitude,
+                    speed_kts=float(speed_kts),
+                    heading_deg=float(heading),
+                    turn_rate_deg_s=float(turn_rate),
                     user_lat=user_lat,
                     user_lon=user_lon,
                     radius_km=radius_km,
                     buffer_km=outer_buffer_km,
                 )
+                
                 if prediction and prediction.get("should_notify"):
                     eta_seconds = prediction.get("eta_seconds")
                     pass_dist = prediction.get("closest_pass_km", outer_dist)
