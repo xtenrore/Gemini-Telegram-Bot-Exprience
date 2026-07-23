@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aircraft Alert Bot - Admin Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <span class="header-icon">&#9992;</span>
+            <h1>Aircraft Alert Bot</h1>
+            <span class="header-badge">Admin</span>
+        </div>
+        <div class="header-right">
+            <span class="status-dot" id="statusDot"></span>
+            <span class="status-text" id="statusText">Connecting...</span>
+            <span class="refresh-timer" id="refreshTimer">30s</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="dashboard">
+
+        <!-- Overview Cards Row -->
+        <section class="cards-row" id="overviewCards">
+            <div class="card stat-card">
+                <div class="stat-icon">&#128101;</div>
+                <div class="stat-body">
+                    <div class="stat-value" id="totalUsers">-</div>
+                    <div class="stat-label">Total Users</div>
+                </div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">&#9989;</div>
+                <div class="stat-body">
+                    <div class="stat-value" id="activeUsers">-</div>
+                    <div class="stat-label">Active Users</div>
+                </div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">&#128276;</div>
+                <div class="stat-body">
+                    <div class="stat-value" id="totalNotifications">-</div>
+                    <div class="stat-label">Notifications Sent</div>
+                </div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">&#9201;</div>
+                <div class="stat-body">
+                    <div class="stat-value" id="uptime">-</div>
+                    <div class="stat-label">Uptime</div>
+                </div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">&#128187;</div>
+                <div class="stat-body">
+                    <div class="stat-value" id="memoryUsage">-</div>
+                    <div class="stat-label">Memory</div>
+                </div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-icon">&#128260;</div>
+                <div class="stat-body">
+                    <div class="stat-value" id="lastCycle">-</div>
+                    <div class="stat-label">Last Cycle</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Providers Section -->
+        <section class="section">
+            <h2 class="section-title">&#128225; Data Providers</h2>
+            <div class="table-wrapper card">
+                <table class="data-table" id="providersTable">
+                    <thead>
+                        <tr>
+                            <th>Provider</th>
+                            <th>Type</th>
+                            <th>Requests</th>
+                            <th>Errors</th>
+                            <th>Last Success</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="providersBody">
+                        <tr><td colspan="6" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- API Keys Section -->
+        <section class="section">
+            <h2 class="section-title">&#128273; OpenSky API Keys</h2>
+            <div class="table-wrapper card">
+                <table class="data-table" id="keysTable">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Username</th>
+                            <th>Source File</th>
+                            <th>Requests</th>
+                            <th>Remaining</th>
+                            <th>Rate Limits</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="keysBody">
+                        <tr><td colspan="7" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Users Section -->
+        <section class="section">
+            <h2 class="section-title">&#128101; Users</h2>
+            <div class="table-wrapper card">
+                <table class="data-table" id="usersTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Location</th>
+                            <th>Categories</th>
+                            <th>Custom Types</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersBody">
+                        <tr><td colspan="7" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Notifications Section -->
+        <section class="section">
+            <h2 class="section-title">&#128276; Recent Notifications</h2>
+            <div class="table-wrapper card">
+                <table class="data-table" id="notificationsTable">
+                    <thead>
+                        <tr>
+                            <th>User ID</th>
+                            <th>Aircraft ICAO</th>
+                            <th>Notified At</th>
+                            <th>Cooldown Until</th>
+                        </tr>
+                    </thead>
+                    <tbody id="notificationsBody">
+                        <tr><td colspan="4" class="loading">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- System Section -->
+        <section class="section">
+            <h2 class="section-title">&#9881; System</h2>
+            <div class="system-grid" id="systemGrid">
+                <div class="card system-card">
+                    <h3>Worker</h3>
+                    <div id="systemWorker" class="system-details">Loading...</div>
+                </div>
+                <div class="card system-card">
+                    <h3>Database</h3>
+                    <div id="systemDatabase" class="system-details">Loading...</div>
+                </div>
+                <div class="card system-card">
+                    <h3>Configuration</h3>
+                    <div id="systemConfig" class="system-details">Loading...</div>
+                </div>
+                <div class="card system-card">
+                    <h3>Platform</h3>
+                    <div id="systemPlatform" class="system-details">Loading...</div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p>Aircraft Alert Bot Admin Dashboard &mdash; Auto-refreshes every 30 seconds</p>
+    </footer>
+
+    <script src="/admin/admin.js"></script>
+</body>
+</html>
