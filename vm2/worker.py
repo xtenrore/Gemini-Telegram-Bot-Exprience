@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -26,6 +27,24 @@ logger = logging.getLogger(__name__)
 
 # Flag for graceful shutdown
 _shutdown_event = asyncio.Event()
+
+async def _dummy_health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Handle dummy HTTP requests for Render health checks."""
+    try:
+        # Read the request line
+        request_line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        if request_line:
+            response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nOK"
+            writer.write(response)
+            await writer.drain()
+    except Exception:
+        pass
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
 
 
 async def main() -> None:
@@ -60,6 +79,12 @@ async def main() -> None:
         max_instances=1,  # Don't overlap if a cycle runs long
         coalesce=True,    # Skip missed runs
     )
+    
+    # Start dummy web server for Render health checks
+    port = int(os.environ.get("PORT", "10000"))
+    dummy_server = await asyncio.start_server(_dummy_health_handler, "0.0.0.0", port)
+    logger.info("Started dummy health check server on port %d", port)
+    
     scheduler.start()
     logger.info("Scheduler started -- monitoring every %ds", settings.poll_interval_seconds)
 
@@ -72,6 +97,8 @@ async def main() -> None:
 
     # Cleanup
     logger.info("Shutting down worker ...")
+    dummy_server.close()
+    await dummy_server.wait_closed()
     scheduler.shutdown(wait=False)
     await close_http_client()
     await close_db()
