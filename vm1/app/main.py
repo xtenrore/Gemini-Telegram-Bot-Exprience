@@ -20,7 +20,7 @@ from telegram.ext import Application
 
 from app.aircraft.api_keys import opensky_key_manager
 from app.aircraft.providers import close_http_client
-from app.admin.routes import router as admin_router
+from app.admin.routes import admin_router
 from app.bot.handlers import register_handlers
 from app.config import settings
 from app.database import close_db, connect_db
