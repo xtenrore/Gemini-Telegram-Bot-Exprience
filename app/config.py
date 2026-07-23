@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     predictor_service_url: str = ""  # e.g. "https://your-vm2-predictor.onrender.com/predict"
 
     # ── Monitoring ──────────────────────────────────────────────────────
-    poll_interval_seconds: int = 10
+    poll_interval_seconds: int = 5
     default_radius_km: float = 15.0
     cooldown_minutes: int = 30
 
