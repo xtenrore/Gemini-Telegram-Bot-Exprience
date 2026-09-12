@@ -48,7 +48,7 @@ async def get_http_client() -> httpx.AsyncClient:
         }
         _http_client = httpx.AsyncClient(
             headers=headers,
-            timeout=httpx.Timeout(15.0),
+            timeout=httpx.Timeout(connect=3.0, read=4.0, write=3.0, pool=3.0),
             follow_redirects=True,
         )
     return _http_client
@@ -405,8 +405,8 @@ class ProviderManager:
             self.adsb_lol,
             self.adsb_fi,
             self.airplanes_live,
-            # OpenSky is low priority: no aircraft_type data, slow OAuth2,
-            # and its token often fails on Render. Keep it last.
+            self.adsb_one,
+            # OpenSky is available as optional backup via get_providers_by_names
         ]
 
         self._type_cache: dict[str, str] = {}
@@ -418,7 +418,9 @@ class ProviderManager:
         if names is None:
             return list(self._all_providers)
         name_set = set(names)
-        return [p for p in self._all_providers if p.name in name_set]
+        # Check all instantiated providers, including OpenSky if requested
+        all_available = self._all_providers + [self.opensky]
+        return [p for p in all_available if p.name in name_set]
 
     async def query_providers(
         self,
@@ -475,13 +477,23 @@ class ProviderManager:
         longitude: float,
         radius_nm: int,
     ) -> list[NormalizedAircraft]:
-        """Query a single provider with error handling."""
+        """Query a single provider with error handling and strict cycle timeout."""
+        # Calculate maximum allowed query time (less than poll interval)
+        max_timeout = max(2.5, min(float(settings.poll_interval_seconds) - 1.0, 4.0))
         try:
-            result = await provider.get_aircraft_in_area(latitude, longitude, radius_nm)
+            result = await asyncio.wait_for(
+                provider.get_aircraft_in_area(latitude, longitude, radius_nm),
+                timeout=max_timeout,
+            )
             logger.debug(
                 "Provider %s returned %d aircraft", provider.name, len(result)
             )
             return result
+        except asyncio.TimeoutError:
+            provider.error_count += 1
+            provider.last_error = f"Timeout (>{max_timeout:.1f}s)"
+            logger.debug("Provider %s timed out (>%.1fs)", provider.name, max_timeout)
+            return []
         except httpx.HTTPStatusError as exc:
             provider.error_count += 1
             provider.last_error = f"HTTP {exc.response.status_code}"

@@ -1,1 +1,0 @@
-"""Background worker sub-package."""

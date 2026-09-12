@@ -1,1 +1,0 @@
-"""Aircraft data sub-package."""

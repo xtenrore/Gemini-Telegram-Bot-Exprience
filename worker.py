@@ -41,7 +41,19 @@ async def main() -> None:
     logger.info("Default radius: %.0f km", settings.default_radius_km)
 
     # Connect to MongoDB
-    await connect_db()
+    try:
+        await connect_db()
+    except Exception as exc:
+        logger.error("Failed to connect to MongoDB: %s. Exiting worker.", exc)
+        return
+
+    # Check bot token
+    bot_token = settings.telegram_bot_token.strip()
+    if not bot_token or bot_token == "your_bot_token_from_botfather":
+        logger.warning(
+            "TELEGRAM_BOT_TOKEN is not configured in .env! "
+            "Worker will monitor aircraft, but notifications cannot be sent until configured."
+        )
 
     # Load OpenSky API keys
     key_count = opensky_key_manager.load_keys()

@@ -675,20 +675,24 @@ async def _handle_radius_input(
         {"$set": {"radius_km": radius}}
     )
 
-    # Advance to next step
     temp = await get_temp_data(user_id)
     selected = set(temp.get("selected_categories", []))
+    disabled = set(temp.get("disabled_types", []))
     custom = temp.get("custom_aircraft", [])
 
     await set_user_state(
         user_id,
         UserState.WAITING_AIRCRAFT_SELECTION,
-        temp_data={"selected_categories": list(selected), "custom_aircraft": custom},
+        temp_data={
+            "selected_categories": list(selected),
+            "disabled_types": list(disabled),
+            "custom_aircraft": custom,
+        },
     )
     await msg.reply_text(
         AIRCRAFT_SELECTION_PROMPT,
         parse_mode=ParseMode.HTML,
-        reply_markup=aircraft_categories_keyboard(selected),
+        reply_markup=aircraft_categories_keyboard(selected, disabled, custom),
     )
 
 

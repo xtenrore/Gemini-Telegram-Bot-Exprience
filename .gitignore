@@ -39,3 +39,7 @@ logs/
 # Database backups
 backup/
 *.dump
+
+# Pytest
+.pytest_cache/
+

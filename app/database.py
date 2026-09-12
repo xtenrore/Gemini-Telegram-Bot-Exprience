@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -20,23 +21,40 @@ _db: AsyncIOMotorDatabase | None = None
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
-async def connect_db() -> AsyncIOMotorDatabase:
+async def connect_db(max_retries: int = 2, retry_delay: float = 1.0, timeout_ms: int = 2000) -> AsyncIOMotorDatabase:
     """Open the MongoDB connection and return the database handle.
 
+    Includes retry logic to handle cases where MongoDB is still starting up.
     Also ensures all required indexes exist.
     """
     global _client, _db  # noqa: PLW0603
 
-    logger.info("Connecting to MongoDB at %s …", settings.mongo_uri)
-    _client = AsyncIOMotorClient(settings.mongo_uri)
-    _db = _client[settings.database_name]
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("Connecting to MongoDB at %s (attempt %d/%d) …", settings.mongo_uri, attempt, max_retries)
+            _client = AsyncIOMotorClient(
+                settings.mongo_uri,
+                serverSelectionTimeoutMS=timeout_ms,
+            )
+            _db = _client[settings.database_name]
 
-    # Verify connectivity
-    await _client.admin.command("ping")
-    logger.info("MongoDB connection established – database: %s", settings.database_name)
+            # Verify connectivity
+            await _client.admin.command("ping")
+            logger.info("MongoDB connection established – database: %s", settings.database_name)
 
-    await _ensure_indexes(_db)
-    return _db
+            await _ensure_indexes(_db)
+            return _db
+        except Exception as exc:
+            if attempt < max_retries:
+                logger.warning(
+                    "Failed to connect to MongoDB (%s). Retrying in %.1fs...",
+                    exc,
+                    retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("Could not connect to MongoDB after %d attempts: %s", max_retries, exc)
+                raise
 
 
 async def close_db() -> None:
@@ -90,6 +108,11 @@ def feedback_col() -> AsyncIOMotorCollection:
     return get_db()["feedback"]
 
 
+def system_status_col() -> AsyncIOMotorCollection:
+    """System heartbeat and monitoring cycle status across processes."""
+    return get_db()["system_status"]
+
+
 # ── Index creation ──────────────────────────────────────────────────────────
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     """Create all required indexes (idempotent)."""
@@ -129,5 +152,8 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     # feedback – tracks user likes/dislikes on notifications
     await db["feedback"].create_index([("user_id", 1), ("notification_id", 1)])
     await db["feedback"].create_index("user_id")
+
+    # system_status
+    await db["system_status"].create_index("updated_at")
 
     logger.info("Database indexes ready.")

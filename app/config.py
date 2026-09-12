@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     # ── Telegram ────────────────────────────────────────────────────────
     telegram_bot_token: str = ""
+    webhook_url: str = ""  # Public HTTPS URL for Telegram Webhook (blank = long polling mode)
+    webhook_secret: str = ""  # Optional secret token for Webhook verification
 
     # ── MongoDB ─────────────────────────────────────────────────────────
     mongo_uri: str = "mongodb://localhost:27017"
@@ -45,8 +47,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # ── Predictor Microservice (VM 2) ─────────────────────────
-    predictor_service_url: str = ""  # e.g. "https://your-vm2-predictor.onrender.com/predict"
+    # ── Trajectory Prediction ───────────────────────────────────────────
+    # Kinematic trajectory calculation runs natively in-process.
+    predictor_service_url: str = ""  # Optional remote override if desired
 
     # ── Monitoring ──────────────────────────────────────────────────────
     poll_interval_seconds: int = 5
@@ -62,6 +65,8 @@ class Settings(BaseSettings):
     admin_password: str = ""  # Optional password for admin panel
 
     # ── Server ──────────────────────────────────────────────────────────
+    host: str = "0.0.0.0"
+    port: int = 8000
     log_level: str = "INFO"
 
 

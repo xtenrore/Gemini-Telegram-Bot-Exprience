@@ -30,6 +30,7 @@ from app.database import (
     locations_col,
     notification_history_col,
     preferences_col,
+    system_status_col,
     users_col,
 )
 from app.worker.geo import (
@@ -101,6 +102,7 @@ async def _monitor_cycle() -> None:
         _last_cycle_time = time.time()
         _last_cycle_duration = time.time() - cycle_start
         _total_cycles += 1
+        await _record_worker_heartbeat(0, 0)
         return
 
     logger.info("Monitor cycle: %d active user(s)", len(active_users))
@@ -127,6 +129,8 @@ async def _monitor_cycle() -> None:
     _last_cycle_duration = time.time() - cycle_start
     _total_cycles += 1
 
+    await _record_worker_heartbeat(len(active_users), total_notifications)
+
     if total_notifications > 0:
         logger.info(
             "Cycle #%d complete -- %d notification(s) sent in %.1fs.",
@@ -140,6 +144,27 @@ async def _monitor_cycle() -> None:
             _total_cycles,
             _last_cycle_duration,
         )
+
+
+async def _record_worker_heartbeat(active_count: int, notifications_sent: int) -> None:
+    """Record heartbeat and cycle metrics to MongoDB for admin and health endpoints."""
+    try:
+        await system_status_col().update_one(
+            {"_id": "monitor_worker"},
+            {
+                "$set": {
+                    "last_cycle_time": _last_cycle_time,
+                    "last_cycle_duration_ms": round(_last_cycle_duration * 1000, 1),
+                    "total_cycles": _total_cycles,
+                    "active_users": active_count,
+                    "notifications_sent_last_cycle": notifications_sent,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 async def _get_active_users() -> list[dict]:

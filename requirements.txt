@@ -1,29 +1,33 @@
 # Telegram Aircraft Alert Bot - Dependencies
 
-# Web framework (Removed - using long polling)
-# Telegram bot
-python-telegram-bot[webhooks]==21.5
+# Web framework & server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Telegram Bot API
+python-telegram-bot[webhooks,job-queue]>=21.5
 
 # MongoDB async driver
-motor==3.6.0
-pymongo==4.9.2
+motor>=3.3.0
+pymongo>=4.9.0
 
 # HTTP client (async)
-httpx==0.27.2
+httpx>=0.27.0
 
 # Configuration & validation
-pydantic==2.9.2
-pydantic-settings==2.5.2
-python-dotenv==1.0.1
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+python-dotenv>=1.0.0
 
 # Geospatial
-geohash2==1.1
+geohash2>=1.1
 
 # Background task scheduling
-apscheduler==3.10.4
+apscheduler>=3.10.4
 
-# Logging
-structlog==24.4.0
+# System monitoring
+psutil>=5.9.0
 
-honcho==1.1.0
-
+# Logging & Process management
+structlog>=24.4.0
+honcho>=1.1.0

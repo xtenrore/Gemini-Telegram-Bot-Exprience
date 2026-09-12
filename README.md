@@ -1,170 +1,230 @@
-# ✈️ Aircraft Alert Telegram Bot
+# ✈️ Aircraft Alert Telegram Bot (Single-VM Linux Edition)
 
-A Telegram bot that monitors ADS-B aircraft data in real-time and sends notifications when user-selected aircraft types pass near their location.
+A high-performance Telegram bot and monitoring system that monitors ADS-B aircraft data in real-time and alerts users when aircraft types of interest pass near their location or enter a projected collision/intercept trajectory.
 
-## Features
+Consolidated into a **single unified Linux VM deployment** with automated systemd background services.
 
-- **Real-time monitoring** — Polls aircraft data every 45 seconds
-- **Multi-source failover** — ADSB.lol → ADSB.fi → OpenSky automatic fallback
-- **Smart notifications** — 30-minute cooldown per aircraft to avoid spam
-- **Category-based filtering** — Military, Large Airliners, Cargo, Business Jets, Helicopters, Government, Experimental, VIP Aircraft
-- **Custom aircraft types** — Track any ICAO type designator
-- **Geohash clustering** — Efficient API usage by grouping nearby users
-- **Webhook architecture** — Event-driven, ideal for Oracle Cloud Free Tier
+---
 
-## Architecture
+## 🌟 Key Features
+
+- **Single-VM Architecture** — Both the FastAPI web server / Telegram bot and the 5-second background monitoring worker run on the same VM with zero cross-VM latency.
+- **Automated Linux Setup Script (`setup.sh`)** — Automatically installs system dependencies, Python 3, MongoDB 7.0, creates venv, sets up `.env`, registers systemd services, and launches them in the background.
+- **Service Management (`manage.sh`)** — Easy commands to start, stop, restart, view live logs, and run automated tests.
+- **Flexible Bot Operation (Polling or Webhook)**:
+  - **Long Polling (Default)**: Runs without requiring a public domain, SSL certificates, or open incoming ports.
+  - **HTTPS Webhook (Optional)**: Automatically activates if `WEBHOOK_URL` is set in `.env`.
+- **Web Admin Dashboard (`/admin`)** — Real-time metrics for active users, notifications sent, provider health, memory usage, and background worker cycle status.
+- **Multi-Source ADS-B Data Feeds (Parallel Query + Failover)**:
+  - [ADSB.lol](https://www.adsb.lol/) — High-speed community feed with ICAO aircraft types
+  - [ADSB.fi](https://www.adsb.fi/) — High-availability European feed
+  - [Airplanes.Live](https://airplanes.live/) — Global aggregated feed
+  - [ADSB.one](https://adsb.one/) — Low-latency community feed
+  - [OpenSky Network](https://opensky-network.org/) — Multi-key rotation backup
+- **Native 3D Kinematics & Trajectory Forecasting** — In-process physics engine calculating turn rates, Closest Distance of Approach (CDA), and ETA over an extended +15km outer early-warning buffer.
+- **Smart Anti-Spam** — 30-minute configurable cooldown per aircraft per user.
+- **Category & Custom Filtering** — Military, Large Airliners, Cargo, Business Jets, Helicopters, Government, VIP, and custom ICAO type codes (e.g. `B738`, `A21N`, `C17`).
+
+---
+
+## 🏗️ Architecture
 
 ```
-Telegram → Caddy (HTTPS) → FastAPI (webhook) → MongoDB
-                                                    ↑
-                        Background Worker (APScheduler)
-                          ↓
-                    ADSB.lol / ADSB.fi / OpenSky
+                               ┌────────────────────────────────────────────────────────┐
+                               │                    Single Linux VM                     │
+                               │                                                        │
+Telegram Servers               │   ┌────────────────────────────────────────────────┐   │
+   │                           │   │  aircraft-bot.service (FastAPI + Telegram)     │   │
+   ├─ (HTTPS Webhook) ─────────┼─► │    • GET  /            -> HTTP 200 OK          │   │
+   │                           │   │    • GET  /health      -> Health status JSON   │   │
+   └─ (or Long Polling) ◄──────┼─► │    • GET  /stats       -> System statistics    │   │
+                               │   │    • POST /webhook     -> Webhook updates      │   │
+                               │   │    • GET  /admin       -> Web Admin Dashboard  │   │
+                               │   └────────────────────────┬───────────────────────┘   │
+                               │                            │                           │
+                               │                            ▼                           │
+                               │                   ┌─────────────────┐                  │
+                               │                   │  MongoDB 7.0    │                  │
+                               │                   └────────┬────────┘                  │
+                               │                            ▲                           │
+ADS-B Providers                │                            │                           │
+(ADSB.lol, ADSB.fi,            │   ┌────────────────────────┴───────────────────────┐   │
+ Airplanes.Live, ADSB.one) ────┼─► │  aircraft-worker.service (Trajectory Monitor)  │   │
+                               │   │    • 5-second polling cycle                    │   │
+                               │   │    • Native kinematics & early warning         │   │
+                               │   │    • Notifications via Telegram Bot API        │   │
+                               │   └────────────────────────────────────────────────┘   │
+                               └────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start (Local Development)
+---
 
-### Prerequisites
+## 🚀 Quick Start (Automated Linux Setup)
 
-- Python 3.11+
-- MongoDB (running locally on default port)
-- Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-
-### Setup
+Run this on any Linux server (Ubuntu 24.04 / 22.04 / 20.04, Debian 12 / 11, Oracle Cloud, DigitalOcean, Hetzner, AWS, etc.):
 
 ```bash
-# Clone the repository
-git clone <your-repo-url>
-cd aircraft-bot
+# 1. Clone the repository
+git clone https://github.com/xtenrore/Gemini-Telegram-Bot-Exprience.git
+cd Gemini-Telegram-Bot-Exprience
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate      # Linux/macOS
-# or
-venv\Scripts\activate         # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your Telegram bot token and settings
+# 2. Run the automated Linux setup script (as root or with sudo)
+sudo bash setup.sh
 ```
 
-### Run
+The script automatically:
+1. Installs system packages, Python 3, and build tools.
+2. Installs and starts MongoDB Community Edition.
+3. Sets up Python virtual environment (`venv/`) and dependencies.
+4. Generates `.env` from `.env.example` and prompts for your Telegram Bot Token.
+5. Installs `aircraft-bot.service`, `aircraft-worker.service`, and `aircraft.target`.
+6. Enables and immediately starts both background services via `systemctl`.
+7. Tests local endpoints and displays service health.
 
-**Option A — Both services in one terminal (development):**
+---
+
+## 🛠️ Service Management
+
+Use the included `./manage.sh` helper script:
 
 ```bash
-# Terminal 1: FastAPI webhook server
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# Check status of bot, worker, MongoDB, and health endpoint
+./manage.sh status
 
-# Terminal 2: Background worker
-python worker.py
+# Restart both background services
+./manage.sh restart
+
+# Stop background services
+./manage.sh stop
+
+# Start background services
+./manage.sh start
+
+# Stream live combined logs from journalctl
+./manage.sh logs
+
+# Stream individual service logs
+./manage.sh logs-bot
+./manage.sh logs-worker
+
+# Run automated test suite
+./manage.sh test
 ```
 
-**Option B — Using ngrok for local webhook testing:**
-
+Standard `systemctl` commands are also fully supported:
 ```bash
-# Terminal 1: Start ngrok
-ngrok http 8000
-
-# Copy the HTTPS URL and set WEBHOOK_URL in .env
-# Then start the bot server and worker
+sudo systemctl status aircraft-bot aircraft-worker
+sudo systemctl restart aircraft.target
 ```
 
-## Deployment (Oracle Cloud Free Tier)
+---
 
-### Automated Setup
+## ⚙️ Configuration (`.env`)
 
-```bash
-# SSH into your VM
-ssh ubuntu@your-vm-ip
+All settings are configured in `.env`. Copy from `.env.example`:
 
-# Upload project files to /opt/aircraft-bot
-# Then run the setup script:
-sudo bash deploy/setup.sh
-```
+| Variable | Default | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Required | Telegram bot token from [@BotFather](https://t.me/BotFather) |
+| `WEBHOOK_URL` | *blank* | Public URL for webhooks. **Leave empty to use Long Polling** |
+| `WEBHOOK_SECRET` | *blank* | Optional secret token for Telegram webhook validation |
+| `MONGO_URI` | `mongodb://localhost:27017` | Local or remote MongoDB connection URI |
+| `DATABASE_NAME` | `aircraft_bot` | MongoDB database name |
+| `POLL_INTERVAL_SECONDS` | `5` | ADS-B query interval in seconds |
+| `DEFAULT_RADIUS_KM` | `15.0` | Default user detection radius in km |
+| `COOLDOWN_MINUTES` | `30` | Minutes to suppress repeat alerts for same aircraft |
+| `ADMIN_PASSWORD` | *blank* | Optional password protecting `/admin` dashboard |
+| `ADMIN_TELEGRAM_ID` | *blank* | Optional Telegram ID for admin notifications |
+| `GEMINI_API_KEY` | *blank* | Optional Gemini API key for AI judge and conflict resolution |
+| `GROQ_API_KEY` | *blank* | Optional Groq API key for AI verification cascade |
 
-### Manual Steps
+---
 
-1. **Configure domain** — Point your domain/subdomain to the VM's public IP
-2. **Edit Caddyfile** — Replace `YOUR_DOMAIN.com` in `/etc/caddy/Caddyfile`
-3. **Create .env** — `cp .env.example .env && nano .env`
-4. **Open firewall** — Allow ports 80 and 443 in Oracle Cloud Security List
-5. **Start services**:
-   ```bash
-   sudo systemctl restart caddy
-   sudo systemctl start aircraft-bot aircraft-worker
-   ```
+## 📊 HTTP Endpoints & Admin Dashboard
 
-### Monitoring
+The FastAPI web service exposes the following endpoints (default port `8000`):
 
-```bash
-# Check service status
-systemctl status aircraft-bot aircraft-worker mongod caddy
+- **`GET /`** — Plain text `"OK"` for deployment health checks and UptimeRobot.
+- **`GET /health`** — JSON status checking MongoDB connectivity, Telegram bot mode, and worker cycle statistics.
+- **`GET /stats`** — JSON overview of active users, total users, and polling configuration.
+- **`GET /admin`** — Interactive Admin Dashboard with live stats, provider metrics, and user management.
+- **`GET /admin/api/*`** — Dashboard JSON APIs (`/overview`, `/users`, `/providers`, `/keys`, `/notifications`, `/system`).
+- **`POST /webhook`** — Telegram update receiver (active when `WEBHOOK_URL` is set).
 
-# View logs
-journalctl -u aircraft-bot -f
-journalctl -u aircraft-worker -f
+---
 
-# Health check
-curl https://your-domain.com/health
-curl https://your-domain.com/stats
-```
-
-## Bot Commands
+## 🤖 Telegram Bot Commands
 
 | Command | Description |
-|---------|-------------|
-| `/start` | Initial welcome & setup flow |
-| `/setup` | Re-run full setup (resets config) |
-| `/status` | View current monitoring config |
-| `/help` | Show all available commands |
-| `/location` | Update monitoring location |
-| `/preferences` | Change aircraft type selection |
-| `/cancel` | Cancel current operation |
+|---|---|
+| `/start` | Welcome message, disclaimer acceptance, and initial setup |
+| `/setup` | Reset preferences and run full setup flow again |
+| `/status` | View current location, radius, and watched aircraft types |
+| `/location` | Update your monitoring GPS coordinates and radius |
+| `/preferences` | Change watched aircraft categories and custom ICAO codes |
+| `/help` | Show command reference and usage help |
+| `/cancel` | Cancel current interactive input step |
 
-## Project Structure
+---
+
+## 📁 Project Structure
 
 ```
+.
 ├── app/
-│   ├── __init__.py
-│   ├── config.py              # Settings from .env
-│   ├── main.py                # FastAPI webhook server
-│   ├── database.py            # MongoDB connection & indexes
-│   ├── bot/
-│   │   ├── handlers.py        # Command & message handlers
+│   ├── admin/                 # Admin dashboard routes & static frontend
+│   │   ├── static/            # HTML5 dashboard, CSS styling, and JavaScript logic
+│   │   └── routes.py          # Dashboard API routes (/admin/api/*)
+│   ├── aircraft/              # Aircraft providers, models, AI judge, & learning
+│   │   ├── api_keys.py        # OpenSky OAuth2 token management & key rotation
+│   │   ├── ai_judge.py        # Gemini + Groq AI cascade verification
+│   │   ├── categories.py      # Aircraft type categories and prefix matchers
+│   │   ├── learner.py         # Per-user provider selection & observation engine
+│   │   ├── models.py          # NormalizedAircraft unified schema
+│   │   └── providers.py       # ADS-B multi-provider fetchers (parallel query)
+│   ├── bot/                   # Telegram bot UI & interactions
+│   │   ├── feedback.py        # Like/dislike notification feedback handlers
+│   │   ├── handlers.py        # Command and callback query handlers
 │   │   ├── keyboards.py       # Inline keyboard builders
-│   │   ├── states.py          # FSM state management
-│   │   └── messages.py        # Message templates
-│   ├── aircraft/
-│   │   ├── categories.py      # Aircraft type categories
-│   │   ├── models.py          # NormalizedAircraft model
-│   │   └── providers.py       # Data providers + failover
-│   └── worker/
-│       ├── monitor.py         # Main monitoring loop
-│       ├── notifications.py   # Notification sender
-│       └── geo.py             # Geospatial utilities
+│   │   ├── messages.py        # HTML message templates
+│   │   └── states.py          # FSM conversation states
+│   ├── worker/                # Monitoring & trajectory engine
+│   │   ├── geo.py             # Haversine distance, bounding boxes, geohash
+│   │   ├── kinematics.py      # Trajectory simulation, curve projection, CDA & ETA
+│   │   ├── monitor.py         # Main ADS-B polling and matching loop
+│   │   └── notifications.py   # Telegram notification sender with rate limiter
+│   ├── config.py              # Application settings (Pydantic BaseSettings)
+│   ├── database.py            # Motor MongoDB async client & index management
+│   └── main.py                # FastAPI web server, admin dashboard, & bot runner
 ├── deploy/
-│   ├── Caddyfile              # Reverse proxy config
-│   ├── aircraft-bot.service   # Systemd service (bot)
-│   ├── aircraft-worker.service # Systemd service (worker)
-│   └── setup.sh               # Automated setup script
-├── worker.py                   # Worker entry point
-├── requirements.txt
-├── .env.example
-└── .gitignore
+│   ├── aircraft-bot.service   # Systemd unit template for web/bot service
+│   ├── aircraft-worker.service# Systemd unit template for background monitor
+│   ├── aircraft.target        # Systemd target unit for managing both services
+│   ├── Caddyfile              # Optional reverse proxy configuration
+│   └── setup.sh               # Deployment setup wrapper
+├── api/                       # OpenSky API key credentials
+├── manage.sh                  # Management CLI (status, start, stop, restart, logs, test)
+├── setup.sh                   # Automated single-VM Linux installer
+├── worker.py                  # Standalone background worker runner
+├── requirements.txt           # Python dependencies
+├── .env.example               # Environment template
+└── Procfile                   # Process definition
 ```
 
-## Aircraft Data Sources
+---
 
-| Provider | Role | Rate Limit | Type Data |
-|----------|------|------------|-----------|
-| [ADSB.lol](https://www.adsb.lol/) | Primary | None currently | ✅ Yes |
-| [ADSB.fi](https://www.adsb.fi/) | Fallback | 1 req/s | ✅ Yes |
-| [OpenSky](https://opensky-network.org/) | Backup | 4000 credits/day | ❌ No |
+## 🧪 Testing
 
-## License
+Run the automated test suite:
 
-MIT
+```bash
+./manage.sh test
+# or
+./venv/bin/pytest -v
+```
+
+---
+
+## 📄 License
+
+MIT License.
