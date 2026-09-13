@@ -127,8 +127,21 @@ Normalize brand/model, preserve raw_input, handle built-in bridge/phone lenses h
 
     async def recommend(self, context: PhotographyContext) -> PhotoRecommendation:
         measured = json.dumps(context.as_prompt_payload(), ensure_ascii=False, indent=2)
+        aircraft = context.aircraft
+        eta = aircraft.eta_seconds if aircraft else None
+        if eta is not None and eta <= 120:
+            thinking_level = "low"
+            urgency = "URGENT: the aircraft is expected within about two minutes. Return the primary usable setup immediately; minimize deliberation and prose."
+        elif eta is not None and eta <= 300:
+            thinking_level = "medium"
+            urgency = "The aircraft is approaching within about five minutes. Favor a fast, decisive setup over lengthy analysis."
+        else:
+            thinking_level = "high"
+            urgency = "There is enough time for a deeper photographic assessment."
+
         prompt = f'''You are a senior aviation and airshow photographer. Produce one precise, practical camera setup for the measured conditions below.
 Gemini must make the photographic decision; the surrounding program only collects measurements.
+{urgency}
 
 MEASURED CONTEXT (do not alter or invent these facts):
 {measured}
@@ -144,7 +157,7 @@ Decision principles:
 - In poor light prefer a usable image over unrealistically low ISO. Only recommend panning when intentional; otherwise freeze motion.
 - Stabilization does not freeze subject motion. Keep technique/warnings concise enough for Telegram.
 - quality_score is the shooting opportunity right now, not camera quality. confidence is confidence in the recommendation.'''
-        result, model_id = await self._structured(prompt, PhotoRecommendation, thinking_level="high")
+        result, model_id = await self._structured(prompt, PhotoRecommendation, thinking_level=thinking_level)
         result.model_used = model_id
         return result
 
