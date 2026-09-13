@@ -15,10 +15,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Telegram ────────────────────────────────────────────────────────
+    # ── Slack ───────────────────────────────────────────────────────────
+    slack_bot_token: str = ""
+    slack_app_token: str = ""
+    slack_alert_channel_id: str = ""
+    admin_slack_user_id: str = ""
+
+    # ── Legacy Telegram values (ignored by the runtime) ────────────────
+    # Kept temporarily so old local .env files and legacy unit tests still load.
     telegram_bot_token: str = ""
-    webhook_url: str = ""  # Public HTTPS URL for Telegram Webhook (blank = long polling mode)
-    webhook_secret: str = ""  # Optional secret token for Webhook verification
+    webhook_url: str = ""
+    webhook_secret: str = ""
 
     # ── MongoDB ─────────────────────────────────────────────────────────
     mongo_uri: str = "mongodb://localhost:27017"
@@ -31,29 +38,22 @@ class Settings(BaseSettings):
     airplanes_live_base_url: str = "https://api.airplanes.live/v2"
     adsb_one_base_url: str = "https://api.adsb.one/v2"
 
-    # OpenSky OAuth2 token endpoint
     opensky_token_url: str = (
         "https://auth.opensky-network.org/auth/realms/"
         "opensky-network/protocol/openid-connect/token"
     )
-
-    # Prefer OPENSKY_CREDENTIALS_JSON in hosted environments. Example:
-    # [{"clientId":"id1","clientSecret":"secret1"},{"clientId":"id2","clientSecret":"secret2"}]
     opensky_credentials_json: str = ""
-    # Optional local fallback directory containing untracked JSON credential files.
     api_keys_dir: str = "api"
 
-    # ── AI Providers ───────────────────────────────────────────────────
+    # ── AI Providers ────────────────────────────────────────────────────
     gemini_api_key: str = ""
-    # Stable free-tier models. 3.5 Flash-Lite is Google's recommended
-    # replacement for 3.1 Flash-Lite; keep 3.1 as a compatible fallback.
     gemini_model_primary: str = "gemini-3.5-flash-lite"
     gemini_model_secondary: str = "gemini-3.1-flash-lite"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
     # ── Trajectory Prediction ───────────────────────────────────────────
-    predictor_service_url: str = ""  # Optional remote override if desired
+    predictor_service_url: str = ""
 
     # ── Monitoring ──────────────────────────────────────────────────────
     poll_interval_seconds: int = 5
@@ -65,7 +65,6 @@ class Settings(BaseSettings):
     relearn_plane_count: int = 25
 
     # ── Admin ───────────────────────────────────────────────────────────
-    admin_telegram_id: int | None = None
     admin_password: str = ""
 
     # ── Server ──────────────────────────────────────────────────────────
