@@ -45,10 +45,10 @@ class Settings(BaseSettings):
 
     # ── AI Providers ───────────────────────────────────────────────────
     gemini_api_key: str = ""
-    # Gemini 3.1 Flash-Lite currently has a Gemini API free tier and is well suited
-    # to the bot's short classification/analysis prompts.
-    gemini_model_primary: str = "gemini-3.1-flash-lite"
-    gemini_model_secondary: str = "gemini-2.5-flash-lite"
+    # Stable free-tier models. 3.5 Flash-Lite is Google's recommended
+    # replacement for 3.1 Flash-Lite; keep 3.1 as a compatible fallback.
+    gemini_model_primary: str = "gemini-3.5-flash-lite"
+    gemini_model_secondary: str = "gemini-3.1-flash-lite"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
