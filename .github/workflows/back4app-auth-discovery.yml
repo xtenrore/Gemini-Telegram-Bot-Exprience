@@ -26,3 +26,5 @@ jobs:
         run: node scripts/inspect_back4app_mcp_source.mjs
       - name: Inspect public Containers dashboard API usage
         run: node scripts/inspect_back4app_containers_dashboard.mjs
+      - name: Probe Account Key to Containers session exchange
+        run: node scripts/probe_back4app_session.mjs
