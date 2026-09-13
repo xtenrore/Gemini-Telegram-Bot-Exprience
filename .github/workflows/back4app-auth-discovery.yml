@@ -1,0 +1,26 @@
+name: Back4app auth discovery
+
+on:
+  push:
+    branches: [chatgpt/back4app-auth-discovery]
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BACK4APP_ACCOUNT_KEY: ${{ secrets.BACK4APP_API || vars.BACK4APP_API }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install official Back4app MCP package
+        run: npm install --no-save @back4app/mcp-server-back4app@latest
+      - name: Inspect public package authentication implementation
+        run: node scripts/inspect_back4app_mcp_source.mjs
