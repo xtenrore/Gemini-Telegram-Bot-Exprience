@@ -61,3 +61,5 @@ jobs:
         run: npm install --no-save @modelcontextprotocol/sdk@latest
       - name: Discover authenticated Back4app MCP tools
         run: node scripts/back4app_mcp_discover.mjs
+      - name: Probe Back4app Agent Containers API authentication
+        run: node scripts/back4app_agent_auth_probe.mjs
