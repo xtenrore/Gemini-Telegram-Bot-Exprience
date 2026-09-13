@@ -5,37 +5,26 @@ const scripts = [...new Set(srcs)].map(src => src.startsWith("http") ? src : new
 console.log(`dashboard_scripts=${scripts.length}`);
 
 const terms = [
-  "ApolloClient",
-  "createHttpLink",
-  "HttpLink",
-  "GraphQLWsLink",
-  "WebSocketLink",
-  "graphql-ws",
-  "/graphql",
-  "graphql",
-  "Authorization",
-  "Bearer ",
-  "accessToken",
-  "sessionToken",
-  "localStorage",
-  "credentials:",
-  "setContext",
-  "triggerManualDeployment",
-  "prepareDeployment",
-  "createApp(",
-  "mutation CreateApp",
-  "mutation createApp",
-  "environmentVars",
-  "repositoryOwnerLogin",
-  "repositoryName",
-  "githubInstallation",
-  "sourceKind",
+  "https://api.containers.back4app.com",
+  "api.containers.back4app.com",
+  "connect.sid",
+  "sessionId",
+  "sessionID",
+  "accountKey",
+  "accountkey",
+  "login",
+  "me=function",
+  "query Me",
+  "query me",
+  "findRepositories",
+  "repositories(",
+  "repositoryBranches",
+  "createAppFromRepository",
+  "updateAppSettings",
 ];
 
 function snippet(text, pos, term) {
-  const start = Math.max(0, pos - 1000);
-  const end = Math.min(text.length, pos + term.length + 1800);
-  return text.slice(start, end).replace(/\s+/g, " ").slice(0, 3200);
+  return text.slice(Math.max(0, pos - 1800), Math.min(text.length, pos + term.length + 3200)).replace(/\s+/g, " ").slice(0, 5200);
 }
 
 for (const url of scripts) {
@@ -43,18 +32,11 @@ for (const url of scripts) {
   if (!response.ok) continue;
   const text = await response.text();
   console.log(`=== SCRIPT ${url} bytes=${text.length} ===`);
-
-  const urls = [...new Set([...text.matchAll(/https?:\\?\/\\?\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+/g)].map(m => m[0].replaceAll("\\/", "/")))]
-    .filter(u => /back4app|graphql|b4a/i.test(u));
-  console.log("PUBLIC_URLS_START");
-  for (const u of urls.slice(0, 100)) console.log(u);
-  console.log("PUBLIC_URLS_END");
-
   let printed = 0;
   for (const term of terms) {
     let pos = 0;
     let perTerm = 0;
-    while ((pos = text.indexOf(term, pos)) >= 0 && perTerm < 4 && printed < 80) {
+    while ((pos = text.indexOf(term, pos)) >= 0 && perTerm < 6 && printed < 90) {
       console.log(`--- TERM ${term} @ ${pos} ---`);
       console.log(snippet(text, pos, term));
       pos += term.length;
