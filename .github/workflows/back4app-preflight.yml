@@ -1,0 +1,56 @@
+name: Back4app + Atlas preflight
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: back4app-production
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    env:
+      MONGO_URI: ${{ secrets.MONGO_URI }}
+      BACK4APP_ACCOUNT_KEY: ${{ secrets.BACK4APP_API || vars.BACK4APP_API }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate configuration presence
+        shell: python
+        run: |
+          import os
+          missing = [name for name in ("MONGO_URI", "BACK4APP_ACCOUNT_KEY") if not os.getenv(name, "").strip()]
+          if missing:
+              raise SystemExit("Missing GitHub configuration: " + ", ".join(missing))
+          print("Atlas URI and Back4app account key are configured (values hidden).")
+
+      - name: Install Atlas verification dependency
+        run: python -m pip install --disable-pip-version-check "pymongo[srv]>=4.9,<5"
+
+      - name: Verify MongoDB Atlas
+        run: python scripts/verify_atlas.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install MCP client
+        run: npm install --no-save @modelcontextprotocol/sdk@latest
+
+      - name: Discover authenticated Back4app MCP tools
+        run: node scripts/back4app_mcp_discover.mjs
