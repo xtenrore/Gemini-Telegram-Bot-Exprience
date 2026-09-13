@@ -1,8 +1,16 @@
 # Environment & secrets
 .env
+.env.*
+!.env.example
 *.pem
 *.key
 groq.txt
+
+# Provider credentials - never commit live credentials
+api/*.json
+!api/.gitkeep
+credentials*.json
+*_credentials.json
 
 # Python
 __pycache__/
@@ -42,4 +50,5 @@ backup/
 
 # Pytest
 .pytest_cache/
-
+.coverage
+htmlcov/

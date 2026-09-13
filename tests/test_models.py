@@ -1,5 +1,7 @@
 """Tests for aircraft data models."""
 
+import pytest
+
 from app.aircraft.models import NormalizedAircraft
 
 
@@ -28,3 +30,18 @@ def test_normalized_aircraft_defaults_and_properties():
     assert ac.display_type == "Unknown"
     assert ac.callsign == ""
     assert ac.origin_country == ""
+    assert ac.ground_speed is None
+    assert ac.track is None
+    assert ac.turn_rate == 0.0
+
+
+def test_ground_speed_and_track_compatibility_for_kinematics():
+    """Provider m/s data must reach the trajectory engine as knots."""
+    ac = NormalizedAircraft(
+        icao24="abc123",
+        velocity=100.0,
+        heading=271.5,
+    )
+    assert ac.ground_speed == pytest.approx(194.384449, rel=1e-6)
+    assert ac.speed == pytest.approx(ac.ground_speed)
+    assert ac.track == 271.5

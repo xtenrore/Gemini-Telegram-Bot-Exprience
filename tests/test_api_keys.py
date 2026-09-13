@@ -1,18 +1,28 @@
 """Tests for OpenSky key manager and rotation."""
 
-from pathlib import Path
-from app.aircraft.api_keys import OpenSkyKeyManager, OpenSkyKey
+import json
+
+from app.aircraft.api_keys import OpenSkyKey, OpenSkyKeyManager
+from app.config import settings
 
 
-def test_opensky_key_manager_load_and_status():
-    """Verify loading and status snapshot."""
+def test_opensky_key_manager_loads_environment_credentials(monkeypatch, tmp_path):
+    """Hosted deployments should load secrets without credential files."""
+    payload = [
+        {"clientId": "id1", "clientSecret": "sec1"},
+        {"clientId": "id2", "clientSecret": "sec2"},
+    ]
+    monkeypatch.setattr(settings, "opensky_credentials_json", json.dumps(payload))
+    monkeypatch.setattr(settings, "api_keys_dir", str(tmp_path / "missing"))
+
     km = OpenSkyKeyManager()
     count = km.load_keys()
-    # Repository has 5 credential files in api/
-    assert count >= 0
+
+    assert count == 2
     status = km.get_status()
-    assert status.total_keys == count
+    assert status.total_keys == 2
     assert status.all_exhausted is False
+    assert status.keys[0]["source_file"] == "env:1"
 
 
 def test_opensky_rotation():
