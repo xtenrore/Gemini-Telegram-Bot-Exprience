@@ -1,0 +1,7 @@
+[project]
+name = "plane-telegram-bot-vercel"
+version = "3.2.0"
+requires-python = ">=3.12"
+
+[[tool.vercel.workflows]]
+entrypoint = "plane_workflows:wf"
