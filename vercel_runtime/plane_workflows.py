@@ -1,13 +1,12 @@
 """Durable Vercel workflows for the Plane? Telegram aircraft bot.
 
-The durable workflow layer is intentionally tiny. The actual application source is
-loaded from the pinned public GitHub commit for each deployment generation. Runtime
-credentials are passed as Vercel Workflow inputs, whose payloads are encrypted by the
-platform, so no application secret needs to be committed to the repository or copied
-into Vercel project environment variables.
+The actual application source is loaded from the pinned public GitHub commit for each
+deployment generation. Runtime credentials are passed as encrypted Vercel Workflow
+inputs; no application secret is committed to the repository.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -15,6 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -23,6 +23,11 @@ from typing import Any
 
 import httpx
 from vercel.workflow import BaseHook, Workflows, sleep, start
+
+# httpx logs complete request URLs at INFO. Telegram Bot API URLs contain the bot
+# token, so production must never emit those URLs. Keep failures visible at WARNING.
+for _noisy_logger in ("httpx", "httpcore", "telegram.request"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 wf = Workflows(namespace="planev32")
 logger = logging.getLogger(__name__)
@@ -34,6 +39,9 @@ SERVERLESS_EARLY_WARNING_BUFFER_KM = 70.0
 
 _loaded_generation: str | None = None
 _loaded_source_path: str | None = None
+_telegram_application: Any | None = None
+_telegram_generation: str | None = None
+_telegram_runtime_lock: asyncio.Lock | None = None
 
 
 @dataclass
@@ -50,6 +58,13 @@ def webhook_path_secret(telegram_token: str, generation: str) -> str:
 
 def telegram_secret_header(path_secret: str) -> str:
     return hashlib.sha256(f"telegram-header|{path_secret}".encode()).hexdigest()[:48]
+
+
+def _runtime_lock() -> asyncio.Lock:
+    global _telegram_runtime_lock
+    if _telegram_runtime_lock is None:
+        _telegram_runtime_lock = asyncio.Lock()
+    return _telegram_runtime_lock
 
 
 def _download_source(generation: str) -> str:
@@ -147,6 +162,77 @@ async def _runtime_is_current(generation: str) -> bool:
     return bool(doc and doc.get("generation") == generation and doc.get("state") == "running")
 
 
+async def _shutdown_cached_telegram_runtime() -> None:
+    """Best-effort teardown used only when a new deployment generation takes over."""
+    global _telegram_application, _telegram_generation
+    application = _telegram_application
+    _telegram_application = None
+    _telegram_generation = None
+    if application is not None:
+        try:
+            if application.running:
+                await application.stop()
+            await application.shutdown()
+        except Exception as exc:
+            logger.warning("Telegram warm runtime teardown failed: %s", type(exc).__name__)
+    try:
+        from app.database import close_db
+
+        await close_db()
+    except Exception:
+        pass
+
+
+async def _ensure_telegram_runtime(config: dict[str, Any], generation: str) -> Any:
+    """Return an initialized warm PTB application and an open database connection.
+
+    The previous implementation recreated a Telegram Application, performed getMe,
+    started/stopped APScheduler, recreated Mongo index checks, and closed MongoDB for
+    every single button press or message. Keeping those resources warm removes the
+    dominant avoidable work while preserving the existing handlers.
+    """
+    global _telegram_application, _telegram_generation
+
+    async with _runtime_lock():
+        if _telegram_application is not None and _telegram_generation != generation:
+            await _shutdown_cached_telegram_runtime()
+
+        source_started = time.perf_counter()
+        _download_source(generation)
+        _apply_runtime_config(config)
+
+        from app.database import connect_db
+
+        # Hot requests never need to ask Atlas to create/check indexes. Bootstrap does
+        # that once; connect_db also reuses a warm Motor client when one exists.
+        await connect_db(max_retries=2, retry_delay=0.25, timeout_ms=6000, ensure_indexes=False)
+
+        if _telegram_application is not None and _telegram_generation == generation:
+            return _telegram_application
+
+        from telegram.ext import Application
+        from app.bot.handlers import register_handlers
+        from app.photography.telegram import register_photography_handlers
+
+        application = Application.builder().token(str(config["telegram_bot_token"])).build()
+        register_photography_handlers(application)
+        register_handlers(application)
+
+        init_started = time.perf_counter()
+        # process_update only requires initialize(); start() would unnecessarily start
+        # JobQueue/APScheduler, which this bot does not use, on every serverless wake.
+        await application.initialize()
+        _telegram_application = application
+        _telegram_generation = generation
+        logger.info(
+            "Telegram warm runtime ready generation=%s source_ms=%d init_ms=%d",
+            generation[:12],
+            int((init_started - source_started) * 1000),
+            int((time.perf_counter() - init_started) * 1000),
+        )
+        return application
+
+
 @wf.step
 async def configure_telegram(
     config: dict[str, Any],
@@ -195,7 +281,8 @@ async def configure_telegram(
     _apply_runtime_config(config)
     from app.database import close_db, connect_db, system_status_col
 
-    await connect_db(max_retries=2, retry_delay=0.5, timeout_ms=8000)
+    # Bootstrap is the single intentional place that verifies/creates indexes.
+    await connect_db(max_retries=2, retry_delay=0.5, timeout_ms=8000, ensure_indexes=True)
     try:
         await system_status_col().update_one(
             {"_id": "telegram_runtime"},
@@ -219,50 +306,36 @@ async def process_telegram_update(
     generation: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run one existing v3.2 Telegram update through the production handlers."""
-    _download_source(generation)
-    _apply_runtime_config(config)
-
-    from telegram import Update
-    from telegram.ext import Application
-    from app.bot.handlers import register_handlers
-    from app.database import close_db, connect_db
-    from app.photography.telegram import register_photography_handlers
-
-    await connect_db(max_retries=2, retry_delay=0.5, timeout_ms=8000)
-    application = Application.builder().token(str(config["telegram_bot_token"])).build()
-    register_photography_handlers(application)
-    register_handlers(application)
-
+    """Run one v3.2 Telegram update through a warm production handler runtime."""
+    started = time.perf_counter()
+    update_id = payload.get("update_id")
     try:
-        await application.initialize()
-        await application.start()
+        application = await _ensure_telegram_runtime(config, generation)
+        from telegram import Update
+
         update = Update.de_json(payload, application.bot)
         if update is not None:
             await application.process_update(update)
-        return {"processed": True, "update_id": payload.get("update_id")}
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info("Telegram update processed update_id=%s total_ms=%d", update_id, elapsed_ms)
+        return {"processed": True, "update_id": update_id, "elapsed_ms": elapsed_ms}
     except Exception as exc:
-        logger.exception("Telegram update processing failed: %s", type(exc).__name__)
-        return {"processed": False, "update_id": payload.get("update_id")}
-    finally:
-        try:
-            if application.running:
-                await application.stop()
-            await application.shutdown()
-        finally:
-            await close_db()
+        logger.exception("Telegram update processing failed update_id=%s type=%s", update_id, type(exc).__name__)
+        return {"processed": False, "update_id": update_id}
 
 
 @wf.step
 async def monitor_cycle_step(config: dict[str, Any], generation: str) -> bool:
     """Run exactly one ADS-B monitor cycle. Return False when superseded."""
+    started = time.perf_counter()
     _download_source(generation)
     _apply_runtime_config(config)
 
     from app.database import close_db, connect_db
     from app.worker.monitor import init_services, run_monitor_cycle
 
-    await connect_db(max_retries=2, retry_delay=0.5, timeout_ms=8000)
+    # Index maintenance is bootstrap work, not three-minute monitor-cycle work.
+    await connect_db(max_retries=2, retry_delay=0.25, timeout_ms=6000, ensure_indexes=False)
     try:
         if not await _runtime_is_current(generation):
             return False
@@ -279,6 +352,7 @@ async def monitor_cycle_step(config: dict[str, Any], generation: str) -> bool:
             }},
             upsert=True,
         )
+        logger.info("Monitor cycle completed generation=%s total_ms=%d", generation[:12], int((time.perf_counter() - started) * 1000))
         return True
     finally:
         await close_db()
