@@ -30,8 +30,8 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
-      - name: Compile application
-        run: python -m compileall -q app worker.py
+      - name: Compile application and Vercel runtime
+        run: python -m compileall -q app vercel_runtime worker.py
 
       - name: Run tests
         env:

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _client: AsyncIOMotorClient | None = None
 _db: AsyncIOMotorDatabase | None = None
+_indexes_ready_for: tuple[str, str] | None = None
 
 
 def _mongo_target_label(uri: str) -> str:
@@ -29,13 +30,31 @@ def _mongo_target_label(uri: str) -> str:
         return "mongodb://configured-host"
 
 
+def _index_cache_key() -> tuple[str, str]:
+    return (_mongo_target_label(settings.mongo_uri), settings.database_name)
+
+
 async def connect_db(
     max_retries: int = 5,
     retry_delay: float = 2.0,
     timeout_ms: int = 10000,
+    *,
+    ensure_indexes: bool = True,
 ) -> AsyncIOMotorDatabase:
-    """Connect to MongoDB/Atlas with conservative retry and memory settings."""
-    global _client, _db
+    """Connect to MongoDB/Atlas with conservative retry and memory settings.
+
+    Warm serverless invocations may reuse the existing Motor client. Index creation is
+    intentionally cacheable because asking Atlas to re-check the full index set on
+    every Telegram update adds avoidable latency.
+    """
+    global _client, _db, _indexes_ready_for
+
+    if _client is not None and _db is not None:
+        if ensure_indexes and _indexes_ready_for != _index_cache_key():
+            await _ensure_indexes(_db)
+            _indexes_ready_for = _index_cache_key()
+        return _db
+
     target = _mongo_target_label(settings.mongo_uri)
     for attempt in range(1, max_retries + 1):
         try:
@@ -44,7 +63,7 @@ async def connect_db(
                 settings.mongo_uri,
                 serverSelectionTimeoutMS=timeout_ms,
                 connectTimeoutMS=timeout_ms,
-                maxPoolSize=20,
+                maxPoolSize=5,
                 minPoolSize=0,
                 maxIdleTimeMS=60000,
                 appname="aircraft-alert-v3.2",
@@ -52,7 +71,9 @@ async def connect_db(
             _db = _client[settings.database_name]
             await _client.admin.command("ping")
             logger.info("MongoDB connection established – database: %s", settings.database_name)
-            await _ensure_indexes(_db)
+            if ensure_indexes and _indexes_ready_for != _index_cache_key():
+                await _ensure_indexes(_db)
+                _indexes_ready_for = _index_cache_key()
             return _db
         except Exception as exc:
             if _client is not None:
