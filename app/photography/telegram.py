@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -109,7 +110,7 @@ async def cmd_camera(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if current:
         name = " ".join(p for p in (current.brand, current.model) if p).strip() or current.raw_input
         await msg.reply_text(
-            f"Current camera: <b>{name}</b>\n\nSend a new camera name to replace it.\n\n" + _CAMERA_PROMPT,
+            f"Current camera: <b>{escape(name, quote=True)}</b>\n\nSend a new camera name to replace it.\n\n" + _CAMERA_PROMPT,
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -133,7 +134,7 @@ async def cmd_lens(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     prefix = ""
     if current:
         name = " ".join(p for p in (current.brand, current.model) if p).strip() or current.raw_input
-        prefix = f"Current lens: <b>{name}</b>\n\nSend a new lens to replace it.\n\n"
+        prefix = f"Current lens: <b>{escape(name, quote=True)}</b>\n\nSend a new lens to replace it.\n\n"
     await msg.reply_text(prefix + _LENS_PROMPT, parse_mode=ParseMode.HTML)
 
 
@@ -194,12 +195,7 @@ async def handle_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     raise ApplicationHandlerStop
 
 
-async def handle_photography_text(
-    update: Update,
-    user_id: int,
-    text: str,
-    state: UserState,
-) -> bool:
+async def handle_photography_text(update: Update, user_id: int, text: str, state: UserState) -> bool:
     """Handle camera/lens text states. Returns True when the text was consumed."""
     if state == UserState.WAITING_CAMERA:
         await _handle_camera_text(update, user_id, text)
@@ -217,7 +213,6 @@ async def _handle_camera_text(update: Update, user_id: int, text: str) -> None:
     if len(text.strip()) < 2:
         await msg.reply_text("Please type a camera model, for example <code>Canon R7</code>.", parse_mode=ParseMode.HTML)
         return
-
     pending = await get_temp_data(user_id)
     progress = await msg.reply_text("🧠 Gemini is identifying your camera and its aviation-photo capabilities…")
     try:
@@ -230,18 +225,14 @@ async def _handle_camera_text(update: Update, user_id: int, text: str) -> None:
         logger.exception("Camera identification failed for user %s", user_id)
         await progress.edit_text("⚠️ Camera identification failed unexpectedly. Send the camera name again to retry.")
         return
-
     await progress.edit_text(camera_profile_message(camera), parse_mode=ParseMode.HTML)
-
     notification_id = str(pending.get("photo_notification_id") or "")
     photo_after = bool(pending.get("photo_after_camera")) or bool(notification_id)
     lens_after = bool(pending.get("lens_after_camera"))
-
     if lens_after:
         await set_user_state(user_id, UserState.WAITING_LENS, temp_data={})
         await msg.reply_text(_LENS_PROMPT, parse_mode=ParseMode.HTML)
         return
-
     await clear_user_state(user_id)
     if photo_after:
         await _send_recommendation(user_id, msg, notification_id=notification_id)
@@ -254,7 +245,6 @@ async def _handle_lens_text(update: Update, user_id: int, text: str) -> None:
     if len(text.strip()) < 2:
         await msg.reply_text("Please type a lens model, for example <code>RF 100-500 L</code>.", parse_mode=ParseMode.HTML)
         return
-
     progress = await msg.reply_text("🧠 Gemini is identifying your lens…")
     try:
         lens = await identify_and_save_lens(user_id, text.strip())
@@ -266,7 +256,6 @@ async def _handle_lens_text(update: Update, user_id: int, text: str) -> None:
         logger.exception("Lens identification failed for user %s", user_id)
         await progress.edit_text("⚠️ Lens identification failed unexpectedly. Send it again to retry.")
         return
-
     await clear_user_state(user_id)
     await progress.edit_text(lens_profile_message(lens), parse_mode=ParseMode.HTML)
 
