@@ -1,7 +1,7 @@
 """Durable Vercel workflows for the Plane? Telegram aircraft bot.
 
-The durable workflow layer is intentionally tiny.  The actual application source is
-loaded from the pinned public GitHub commit for each deployment generation.  Runtime
+The durable workflow layer is intentionally tiny. The actual application source is
+loaded from the pinned public GitHub commit for each deployment generation. Runtime
 credentials are passed as Vercel Workflow inputs, whose payloads are encrypted by the
 platform, so no application secret needs to be committed to the repository or copied
 into Vercel project environment variables.
@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 from vercel.workflow import BaseHook, Workflows, sleep, start
 
-wf = Workflows(namespace="plane-telegram-v32")
+wf = Workflows(namespace="planev32")
 logger = logging.getLogger(__name__)
 
 REPOSITORY = "xtenrore/Gemini-Telegram-Bot-Exprience"
@@ -88,10 +88,9 @@ def _download_source(generation: str) -> str:
                     with archive.open(info) as source, target.open("wb") as dest:
                         shutil.copyfileobj(source, dest)
 
-            # Vercel's no-card Hobby runtime checks less often than the original
-            # container worker. Keep the native trajectory engine, but widen only
-            # this runtime's early-warning envelope so a fast jet cannot cross the
-            # watched area between durable monitor cycles.
+            # The free durable runtime checks less often than the original container
+            # worker. Keep the trajectory engine but widen only this runtime's
+            # prediction envelope so fast aircraft are still detected early.
             monitor_file = tmp / "app" / "worker" / "monitor.py"
             text = monitor_file.read_text(encoding="utf-8")
             text = text.replace(
@@ -243,8 +242,6 @@ async def process_telegram_update(
             await application.process_update(update)
         return {"processed": True, "update_id": payload.get("update_id")}
     except Exception as exc:
-        # Telegram may retry webhook delivery; do not ask Workflow to replay a
-        # partially side-effecting handler automatically as that can duplicate replies.
         logger.exception("Telegram update processing failed: %s", type(exc).__name__)
         return {"processed": False, "update_id": payload.get("update_id")}
     finally:
