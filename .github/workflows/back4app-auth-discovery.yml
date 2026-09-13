@@ -8,7 +8,7 @@ on:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
@@ -24,3 +24,5 @@ jobs:
         run: npm install --no-save @back4app/mcp-server-back4app@latest
       - name: Inspect public package authentication implementation
         run: node scripts/inspect_back4app_mcp_source.mjs
+      - name: Inspect public Containers dashboard API usage
+        run: node scripts/inspect_back4app_containers_dashboard.mjs
