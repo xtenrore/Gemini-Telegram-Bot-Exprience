@@ -1,13 +1,16 @@
 """Notification sending with rate limiting, feedback buttons, and error handling.
 
-Handles sending Telegram messages to users and gracefully handles
-blocked-bot errors by marking users inactive.
+Handles sending Telegram messages to users and gracefully handles blocked-bot
+errors by marking users inactive. Provider-controlled strings are escaped before
+being inserted into Telegram HTML messages.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
+from urllib.parse import quote
 
 from telegram import Bot, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -21,9 +24,13 @@ from app.database import users_col
 
 logger = logging.getLogger(__name__)
 
-# Simple rate limiter: max messages per second to avoid Telegram limits.
 _send_semaphore = asyncio.Semaphore(20)
-_MIN_SEND_INTERVAL = 0.05  # 50ms between sends
+_MIN_SEND_INTERVAL = 0.05
+
+
+def _safe_provider_text(value: str) -> str:
+    """Escape external provider text for Telegram HTML parse mode."""
+    return escape(value or "", quote=True)
 
 
 async def send_aircraft_notification(
@@ -38,14 +45,16 @@ async def send_aircraft_notification(
     Returns ``True`` if the message was sent successfully.
     """
     msg = aircraft_alert_message(
-        aircraft_type=aircraft.display_type,
-        callsign=aircraft.callsign,
+        aircraft_type=_safe_provider_text(aircraft.display_type),
+        callsign=_safe_provider_text(aircraft.callsign),
         distance_km=distance_km,
         altitude_m=aircraft.altitude,
         velocity_ms=aircraft.velocity,
         heading=aircraft.heading,
-        icao24=aircraft.icao24,
-        origin_country=aircraft.origin_country,
+        # ICAO24 normally contains only hex characters. URL-encode defensively
+        # because it is interpolated into a tracking link.
+        icao24=quote(aircraft.icao24 or "", safe=""),
+        origin_country=_safe_provider_text(aircraft.origin_country),
         eta_seconds=eta_seconds,
     )
 
@@ -89,7 +98,6 @@ async def _send_message(
             return True
 
         except Forbidden:
-            # User blocked the bot — mark inactive so we stop trying
             logger.warning(
                 "User %d has blocked the bot — marking setup_complete=False", user_id
             )
@@ -115,10 +123,10 @@ async def send_admin_alert(text: str) -> None:
         return
 
     try:
-        bot = Bot(token=settings.telegram_bot_token)
+        bot = _get_bot()
         await bot.send_message(
             chat_id=settings.admin_telegram_id,
-            text=f"🔔 <b>Admin Alert</b>\n\n{text}",
+            text=f"🔔 <b>Admin Alert</b>\n\n{escape(text, quote=True)}",
             parse_mode=ParseMode.HTML,
         )
     except Exception:
