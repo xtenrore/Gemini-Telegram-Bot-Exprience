@@ -12,7 +12,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     permissions:
       contents: read
 
@@ -54,5 +54,9 @@ jobs:
       - name: Verify Telegram and Gemini
         run: python scripts/verify_integrations.py
 
-      - name: Deploy v3.2
+      - name: One-time clean Northflank reset
+        if: ${{ contains(github.event.head_commit.message, '[reset-northflank]') }}
+        run: python scripts/reset_northflank_projects.py
+
+      - name: Deploy v3.2 from GitHub main
         run: python scripts/deploy_northflank.py
