@@ -158,18 +158,38 @@ async def _find_live_aircraft(
     )
 
 
-async def _notification_fallback(user_id: int, notification_id: str) -> AircraftPhotoContext | None:
-    if not notification_id:
-        return None
-    doc = await notification_history_col().find_one({"_id": notification_id, "user_id": user_id})
-    if not doc:
-        return None
+def _aircraft_from_doc(doc: dict[str, Any]) -> AircraftPhotoContext:
     return AircraftPhotoContext(
         icao24=str(doc.get("aircraft_icao24") or ""),
         aircraft_type=str(doc.get("aircraft_type") or ""),
+        callsign=str(doc.get("callsign") or ""),
         distance_km=float(doc["distance_km"]) if doc.get("distance_km") is not None else None,
+        altitude_m=float(doc["altitude_m"]) if doc.get("altitude_m") is not None else None,
+        speed_ms=float(doc["speed_ms"]) if doc.get("speed_ms") is not None else None,
+        heading_deg=float(doc["heading_deg"]) if doc.get("heading_deg") is not None else None,
+        latitude=float(doc["latitude"]) if doc.get("latitude") is not None else None,
+        longitude=float(doc["longitude"]) if doc.get("longitude") is not None else None,
+        eta_seconds=float(doc["eta_seconds"]) if doc.get("eta_seconds") is not None else None,
         live=False,
     )
+
+
+async def _notification_fallback(user_id: int, notification_id: str) -> AircraftPhotoContext | None:
+    if not notification_id:
+        return None
+
+    # This snapshot is written before Telegram sends the alert, so an immediate
+    # tap always has plane context even before monitor history is finalized.
+    snapshot = await get_db()["photo_alert_snapshots"].find_one(
+        {"_id": notification_id, "user_id": user_id}
+    )
+    if snapshot:
+        return _aircraft_from_doc(snapshot)
+
+    doc = await notification_history_col().find_one({"_id": notification_id, "user_id": user_id})
+    if not doc:
+        return None
+    return _aircraft_from_doc(doc)
 
 
 async def build_photography_context(
@@ -193,6 +213,9 @@ async def build_photography_context(
     fallback = await _notification_fallback(user_id, notification_id) if notification_id else None
     target_icao = fallback.icao24 if fallback else ""
 
+    # Start live refresh and atmospheric work together. The saved alert snapshot
+    # is authoritative enough to begin an urgent recommendation, so live ADS-B
+    # refresh is given only a short grace period after weather becomes ready.
     weather_task = asyncio.create_task(get_current_conditions(latitude, longitude))
     live_task = asyncio.create_task(
         _find_live_aircraft(
@@ -203,7 +226,30 @@ async def build_photography_context(
             prefs=prefs,
         )
     )
-    weather, live = await asyncio.gather(weather_task, live_task)
+
+    weather = await weather_task
+    live: AircraftPhotoContext | None = None
+    if live_task.done():
+        try:
+            live = live_task.result()
+        except Exception:
+            live = None
+    else:
+        try:
+            live = await asyncio.wait_for(asyncio.shield(live_task), timeout=1.5)
+        except (asyncio.TimeoutError, Exception):
+            live = None
+            live_task.cancel()
+
+    if live and fallback:
+        # Preserve predictive ETA from the alert while refreshing the aircraft's
+        # current position/distance/speed from ADS-B.
+        if live.eta_seconds is None:
+            live.eta_seconds = fallback.eta_seconds
+        if not live.callsign:
+            live.callsign = fallback.callsign
+        if not live.aircraft_type:
+            live.aircraft_type = fallback.aircraft_type
 
     aircraft = live or fallback
     solar = get_solar_context(
