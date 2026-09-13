@@ -111,5 +111,7 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["feedback"].create_index([("user_id", 1), ("notification_id", 1)])
     await db["feedback"].create_index("user_id")
     await db["camera_profiles"].create_index("user_id", unique=True)
+    await db["photo_alert_snapshots"].create_index([("user_id", 1), ("aircraft_icao24", 1)])
+    await db["photo_alert_snapshots"].create_index("expires_at", expireAfterSeconds=0)
     await db["system_status"].create_index("updated_at")
     logger.info("Database indexes ready.")
