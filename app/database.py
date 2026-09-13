@@ -1,5 +1,4 @@
 """Async MongoDB connection and collection helpers via Motor."""
-
 from __future__ import annotations
 
 import asyncio
@@ -14,43 +13,24 @@ if TYPE_CHECKING:
     from motor.motor_asyncio import AsyncIOMotorCollection
 
 logger = logging.getLogger(__name__)
-
-# ── Module-level singletons ─────────────────────────────────────────────────
 _client: AsyncIOMotorClient | None = None
 _db: AsyncIOMotorDatabase | None = None
 
 
-# ── Lifecycle ────────────────────────────────────────────────────────────────
 async def connect_db(max_retries: int = 2, retry_delay: float = 1.0, timeout_ms: int = 2000) -> AsyncIOMotorDatabase:
-    """Open the MongoDB connection and return the database handle.
-
-    Includes retry logic to handle cases where MongoDB is still starting up.
-    Also ensures all required indexes exist.
-    """
-    global _client, _db  # noqa: PLW0603
-
+    global _client, _db
     for attempt in range(1, max_retries + 1):
         try:
             logger.info("Connecting to MongoDB at %s (attempt %d/%d) …", settings.mongo_uri, attempt, max_retries)
-            _client = AsyncIOMotorClient(
-                settings.mongo_uri,
-                serverSelectionTimeoutMS=timeout_ms,
-            )
+            _client = AsyncIOMotorClient(settings.mongo_uri, serverSelectionTimeoutMS=timeout_ms)
             _db = _client[settings.database_name]
-
-            # Verify connectivity
             await _client.admin.command("ping")
             logger.info("MongoDB connection established – database: %s", settings.database_name)
-
             await _ensure_indexes(_db)
             return _db
         except Exception as exc:
             if attempt < max_retries:
-                logger.warning(
-                    "Failed to connect to MongoDB (%s). Retrying in %.1fs...",
-                    exc,
-                    retry_delay,
-                )
+                logger.warning("Failed to connect to MongoDB (%s). Retrying in %.1fs...", exc, retry_delay)
                 await asyncio.sleep(retry_delay)
             else:
                 logger.error("Could not connect to MongoDB after %d attempts: %s", max_retries, exc)
@@ -58,9 +38,7 @@ async def connect_db(max_retries: int = 2, retry_delay: float = 1.0, timeout_ms:
 
 
 async def close_db() -> None:
-    """Close the MongoDB connection."""
-    global _client, _db  # noqa: PLW0603
-
+    global _client, _db
     if _client is not None:
         _client.close()
         _client = None
@@ -69,13 +47,11 @@ async def close_db() -> None:
 
 
 def get_db() -> AsyncIOMotorDatabase:
-    """Return the current database handle (must call ``connect_db`` first)."""
     if _db is None:
         raise RuntimeError("Database not initialised – call connect_db() first.")
     return _db
 
 
-# ── Collection accessors ────────────────────────────────────────────────────
 def users_col() -> AsyncIOMotorCollection:
     return get_db()["users"]
 
@@ -108,52 +84,32 @@ def feedback_col() -> AsyncIOMotorCollection:
     return get_db()["feedback"]
 
 
+def camera_profiles_col() -> AsyncIOMotorCollection:
+    return get_db()["camera_profiles"]
+
+
 def system_status_col() -> AsyncIOMotorCollection:
-    """System heartbeat and monitoring cycle status across processes."""
     return get_db()["system_status"]
 
 
-# ── Index creation ──────────────────────────────────────────────────────────
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
-    """Create all required indexes (idempotent)."""
     logger.info("Ensuring database indexes …")
-
-    # users
     await db["users"].create_index("user_id", unique=True)
-
-    # locations
     await db["locations"].create_index("user_id")
     await db["locations"].create_index("geohash")
-
-    # preferences
     await db["preferences"].create_index("user_id", unique=True)
-
-    # user_state
     await db["user_state"].create_index("user_id", unique=True)
-
-    # notification_history – compound index for cooldown lookups
     await db["notification_history"].create_index(
         [("user_id", 1), ("aircraft_icao24", 1), ("cooldown_until", 1)]
     )
-    # TTL index: automatically delete old notifications after 24 hours
-    await db["notification_history"].create_index(
-        "cooldown_until", expireAfterSeconds=86400
-    )
-
-    # provider_learning – tracks per-user provider selection and learning progress
+    await db["notification_history"].create_index("cooldown_until", expireAfterSeconds=86400)
     await db["provider_learning"].create_index(
         [("user_id", 1), ("geohash", 1)], unique=True
     )
     await db["provider_learning"].create_index("user_id")
-
-    # ai_usage – tracks daily AI usage per model
     await db["ai_usage"].create_index([("model_name", 1), ("day", 1)], unique=True)
-
-    # feedback – tracks user likes/dislikes on notifications
     await db["feedback"].create_index([("user_id", 1), ("notification_id", 1)])
     await db["feedback"].create_index("user_id")
-
-    # system_status
+    await db["camera_profiles"].create_index("user_id", unique=True)
     await db["system_status"].create_index("updated_at")
-
     logger.info("Database indexes ready.")
