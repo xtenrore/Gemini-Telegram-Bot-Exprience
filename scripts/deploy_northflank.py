@@ -1,7 +1,8 @@
-"""Idempotently deploy Aircraft Alert to Northflank from GitHub Actions.
+"""Provision/update the production Northflank stack from GitHub Actions.
 
-Secrets are read only from environment variables. This script intentionally
-never logs secret values or HTTP request bodies.
+Slack credentials are optional during infrastructure provisioning. When
+SLACK_BOT_TOKEN and SLACK_APP_TOKEN are added later, rerunning this workflow
+updates the same service and enables Socket Mode.
 """
 
 from __future__ import annotations
@@ -15,24 +16,23 @@ from urllib.parse import quote_plus
 
 import httpx
 
-API_BASE = "https://api.northflank.com/v1"
-PROJECT_ID = "aircraft-alerts"
-ADDON_ID = "aircraft-mongo"
-SERVICE_ID = "aircraft-alerts"
-REPO_URL = "https://github.com/xtenrore/Gemini-Telegram-Bot-Exprience"
+BASE = "https://api.northflank.com/v1"
+PROJECT = "aircraft-alerts"
+ADDON = "aircraft-mongo"
+SERVICE = "aircraft-alerts"
+REPO = "https://github.com/xtenrore/Gemini-Telegram-Bot-Exprience"
 REGION = os.getenv("NF_REGION", "europe-west")
-REQUEST_TIMEOUT = 30.0
 
 
-def _required(name: str) -> str:
+def required(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
         raise RuntimeError(f"Required environment variable {name} is missing")
     return value
 
 
-TOKEN = _required("NF_API_TOKEN")
-SECRETS = [
+TOKEN = required("NF_API_TOKEN")
+KNOWN_SECRETS = [
     TOKEN,
     os.getenv("SLACK_BOT_TOKEN", ""),
     os.getenv("SLACK_APP_TOKEN", ""),
@@ -43,155 +43,188 @@ SECRETS = [
 ]
 
 
-def _redact(text: str) -> str:
-    output = text
-    for secret in sorted((s for s in SECRETS if s), key=len, reverse=True):
-        output = output.replace(secret, "***")
-    output = re.sub(r"\b(?:xoxb|xapp)-[A-Za-z0-9-]+\b", "***", output)
-    return output
+def redact(text: str) -> str:
+    out = text
+    for secret in sorted((x for x in KNOWN_SECRETS if x), key=len, reverse=True):
+        out = out.replace(secret, "***")
+    return re.sub(r"\b(?:xoxb|xapp)-[A-Za-z0-9-]+\b", "***", out)
 
 
-class Northflank:
+class NF:
     def __init__(self) -> None:
-        self.client = httpx.Client(
-            base_url=API_BASE,
+        self.http = httpx.Client(
+            base_url=BASE,
             headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
-            timeout=REQUEST_TIMEOUT,
+            timeout=30,
         )
 
-    def request(self, method: str, path: str, *, json: dict[str, Any] | None = None, allowed: tuple[int, ...] = (200, 201, 202)) -> httpx.Response:
-        response = self.client.request(method, path, json=json)
-        if response.status_code not in allowed:
-            body = _redact(response.text[:1500])
-            raise RuntimeError(f"Northflank {method} {path} failed ({response.status_code}): {body}")
-        return response
+    def call(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        ok: tuple[int, ...] = (200, 201, 202),
+    ) -> dict[str, Any]:
+        response = self.http.request(method, path, json=body)
+        if response.status_code not in ok:
+            raise RuntimeError(
+                f"Northflank {method} {path} failed ({response.status_code}): "
+                f"{redact(response.text[:1200])}"
+            )
+        if response.status_code == 204 or not response.content:
+            return {}
+        payload = response.json()
+        return payload.get("data", payload)
 
-    def get_optional(self, path: str) -> dict[str, Any] | None:
-        response = self.client.get(path)
+    def get(self, path: str) -> dict[str, Any] | None:
+        response = self.http.get(path)
         if response.status_code == 404:
             return None
         if response.status_code != 200:
-            raise RuntimeError(f"Northflank GET {path} failed ({response.status_code}): {_redact(response.text[:1500])}")
+            raise RuntimeError(
+                f"Northflank GET {path} failed ({response.status_code}): "
+                f"{redact(response.text[:1200])}"
+            )
         payload = response.json()
         return payload.get("data", payload)
 
 
-def _project(nf: Northflank) -> str:
-    existing = nf.get_optional(f"/projects/{PROJECT_ID}")
-    if existing:
-        print(f"Northflank project ready: {PROJECT_ID}")
-        return str(existing.get("id", PROJECT_ID))
-    data = nf.request(
+def ensure_project(nf: NF) -> str:
+    current = nf.get(f"/projects/{PROJECT}")
+    if current:
+        print("Northflank project exists.")
+        return str(current.get("id", PROJECT))
+    created = nf.call(
         "POST",
         "/projects",
-        json={"name": "Aircraft Alerts", "description": "Slack aircraft proximity alerts and ADS-B monitor", "region": REGION},
-    ).json().get("data", {})
-    project_id = str(data.get("id", PROJECT_ID))
+        {
+            "name": "Aircraft Alerts",
+            "description": "Slack aircraft proximity alerts and ADS-B monitor",
+            "region": REGION,
+        },
+    )
+    project_id = str(created.get("id", PROJECT))
     print(f"Created Northflank project: {project_id}")
     return project_id
 
 
-def _addon(nf: Northflank, project_id: str) -> str:
-    existing = nf.get_optional(f"/projects/{project_id}/addons/{ADDON_ID}")
-    if existing:
-        print(f"MongoDB addon ready/existing: {ADDON_ID}")
-        return str(existing.get("id", ADDON_ID))
-    last_error: Exception | None = None
+def ensure_addon(nf: NF, project_id: str) -> str:
+    current = nf.get(f"/projects/{project_id}/addons/{ADDON}")
+    if current:
+        print("MongoDB addon exists.")
+        return str(current.get("id", ADDON))
+
+    errors: list[str] = []
     for plan in ("nf-compute-10", "nf-compute-20", "nf-compute-50"):
-        payload = {
-            "name": "Aircraft Mongo",
-            "description": "Aircraft Alert application database",
-            "type": "mongodb",
-            "version": "latest",
-            "billing": {"deploymentPlan": plan, "storage": 1024, "replicas": 1},
-            "tlsEnabled": False,
-            "externalAccessEnabled": False,
-        }
         try:
-            data = nf.request("POST", f"/projects/{project_id}/addons", json=payload).json().get("data", {})
-            addon_id = str(data.get("id", ADDON_ID))
-            print(f"Created MongoDB addon {addon_id} using {plan}")
+            created = nf.call(
+                "POST",
+                f"/projects/{project_id}/addons",
+                {
+                    "name": "Aircraft Mongo",
+                    "description": "Aircraft Alert application database",
+                    "type": "mongodb",
+                    "version": "latest",
+                    "billing": {
+                        "deploymentPlan": plan,
+                        "storage": 1024,
+                        "replicas": 1,
+                    },
+                    "tlsEnabled": False,
+                    "externalAccessEnabled": False,
+                },
+            )
+            addon_id = str(created.get("id", ADDON))
+            print(f"Created MongoDB addon using {plan}: {addon_id}")
             return addon_id
         except RuntimeError as exc:
-            last_error = exc
-            print(f"MongoDB plan {plan} was not accepted; trying the next sandbox-size plan.")
-    raise RuntimeError(f"Unable to create MongoDB addon. Last error: {last_error}")
+            errors.append(str(exc))
+            print(f"MongoDB plan {plan} unavailable; trying next small plan.")
+    raise RuntimeError("Could not create MongoDB addon. " + errors[-1])
 
 
-def _wait_for_addon(nf: Northflank, project_id: str, addon_id: str) -> dict[str, Any]:
+def wait_addon(nf: NF, project_id: str, addon_id: str) -> None:
     deadline = time.time() + 600
-    last_status = ""
+    last = ""
     while time.time() < deadline:
-        data = nf.get_optional(f"/projects/{project_id}/addons/{addon_id}")
-        if not data:
-            raise RuntimeError("MongoDB addon disappeared during provisioning")
-        status = str(data.get("status", "")).lower()
-        if status != last_status:
+        addon = nf.get(f"/projects/{project_id}/addons/{addon_id}") or {}
+        status = str(addon.get("status", "")).lower()
+        if status != last:
             print(f"MongoDB status: {status or 'provisioning'}")
-            last_status = status
+            last = status
         if status == "running":
-            return data
+            return
         if status in {"failed", "error"}:
-            raise RuntimeError(f"MongoDB provisioning failed with status {status}")
+            raise RuntimeError(f"MongoDB provisioning failed: {status}")
         time.sleep(10)
-    raise RuntimeError("MongoDB addon did not become ready before deployment timeout")
+    raise RuntimeError("MongoDB provisioning timeout")
 
 
-def _find_key(data: Any, names: tuple[str, ...]) -> str:
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if str(key).upper() in names and isinstance(value, str) and value:
-                return value
-        for value in data.values():
-            found = _find_key(value, names)
+def deep_find(value: Any, wanted: set[str]) -> str:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).upper() in wanted and isinstance(item, str) and item:
+                return item
+        for item in value.values():
+            found = deep_find(item, wanted)
             if found:
                 return found
-    elif isinstance(data, list):
-        for value in data:
-            found = _find_key(value, names)
+    elif isinstance(value, list):
+        for item in value:
+            found = deep_find(item, wanted)
             if found:
                 return found
     return ""
 
 
-def _mongo_uri(nf: Northflank, project_id: str, addon_id: str) -> str:
+def mongo_uri(nf: NF, project_id: str, addon_id: str) -> str:
     deadline = time.time() + 180
-    credentials: dict[str, Any] = {}
+    credentials: dict[str, Any] | None = None
     while time.time() < deadline:
-        response = nf.client.get(f"/projects/{project_id}/addons/{addon_id}/credentials")
+        response = nf.http.get(f"/projects/{project_id}/addons/{addon_id}/credentials")
         if response.status_code == 200:
             payload = response.json()
             credentials = payload.get("data", payload)
             break
         if response.status_code not in {404, 409, 425}:
-            raise RuntimeError(f"Could not read MongoDB credentials ({response.status_code}): {_redact(response.text[:1200])}")
+            raise RuntimeError(
+                f"MongoDB credentials request failed ({response.status_code}): "
+                f"{redact(response.text[:1000])}"
+            )
         time.sleep(5)
     if not credentials:
         raise RuntimeError("MongoDB credentials were not ready")
-    for names in (("MONGO_SRV", "MONGODB_URI", "MONGO_URI", "MONGO_URL"), ("NF_MONGO_SRV", "NF_MONGO_URI")):
-        uri = _find_key(credentials, names)
-        if uri.startswith("mongodb"):
-            return uri
-    username = _find_key(credentials, ("USERNAME", "MONGO_USERNAME", "NF_MONGO_USERNAME"))
-    password = _find_key(credentials, ("PASSWORD", "MONGO_PASSWORD", "NF_MONGO_PASSWORD"))
-    host = _find_key(credentials, ("HOST", "MONGO_HOST", "NF_MONGO_HOST", "INTERNAL_HOST", "INTERNALHOST"))
-    port = _find_key(credentials, ("PORT", "MONGO_PORT", "NF_MONGO_PORT"))
-    database = _find_key(credentials, ("DATABASE", "DB", "MONGO_DATABASE", "NF_MONGO_DATABASE")) or "aircraft_bot"
-    if username and password and host:
-        authority = f"{quote_plus(username)}:{quote_plus(password)}@{host}"
+
+    uri = deep_find(
+        credentials,
+        {"MONGO_SRV", "MONGO_URI", "MONGODB_URI", "MONGO_URL", "NF_MONGO_SRV", "NF_MONGO_URI"},
+    )
+    if uri.startswith("mongodb"):
+        return uri
+
+    user = deep_find(credentials, {"USERNAME", "MONGO_USERNAME", "NF_MONGO_USERNAME"})
+    password = deep_find(credentials, {"PASSWORD", "MONGO_PASSWORD", "NF_MONGO_PASSWORD"})
+    host = deep_find(credentials, {"HOST", "MONGO_HOST", "NF_MONGO_HOST", "INTERNAL_HOST"})
+    port = deep_find(credentials, {"PORT", "MONGO_PORT", "NF_MONGO_PORT"})
+    database = deep_find(credentials, {"DATABASE", "DB", "MONGO_DATABASE"}) or "aircraft_bot"
+    if user and password and host:
+        authority = f"{quote_plus(user)}:{quote_plus(password)}@{host}"
         if port:
             authority += f":{port}"
         return f"mongodb://{authority}/{quote_plus(database)}?authSource=admin"
-    raise RuntimeError("Northflank returned MongoDB credentials but no recognized connection string fields. Top-level keys: " + str(sorted(str(k) for k in credentials.keys())))
+    raise RuntimeError(
+        "MongoDB credentials returned an unfamiliar shape. Keys: "
+        + ", ".join(sorted(str(x) for x in credentials.keys()))
+    )
 
 
-def _runtime_env(mongo_uri: str) -> dict[str, str]:
+def environment(uri: str) -> dict[str, str]:
     env = {
-        "MONGO_URI": mongo_uri,
+        "MONGO_URI": uri,
         "DATABASE_NAME": "aircraft_bot",
-        "SLACK_BOT_TOKEN": _required("SLACK_BOT_TOKEN"),
-        "SLACK_APP_TOKEN": _required("SLACK_APP_TOKEN"),
-        "GEMINI_API_KEY": _required("GEMINI_API_KEY"),
+        "SLACK_BOT_TOKEN": os.getenv("SLACK_BOT_TOKEN", "").strip(),
+        "SLACK_APP_TOKEN": os.getenv("SLACK_APP_TOKEN", "").strip(),
+        "GEMINI_API_KEY": required("GEMINI_API_KEY"),
         "GEMINI_MODEL_PRIMARY": "gemini-3.5-flash-lite",
         "GEMINI_MODEL_SECONDARY": "gemini-3.1-flash-lite",
         "POLL_INTERVAL_SECONDS": "5",
@@ -199,65 +232,89 @@ def _runtime_env(mongo_uri: str) -> dict[str, str]:
         "COOLDOWN_MINUTES": "30",
         "LEARNING_PLANE_THRESHOLD": "100",
         "RELEARN_PLANE_COUNT": "25",
-        "LOG_LEVEL": "INFO",
-        "PORT": "8000",
         "HOST": "0.0.0.0",
+        "PORT": "8000",
+        "LOG_LEVEL": "INFO",
     }
-    for key in ("SLACK_ALERT_CHANNEL_ID", "ADMIN_SLACK_USER_ID", "ADMIN_PASSWORD", "OPENSKY_CREDENTIALS_JSON", "GROQ_API_KEY"):
-        value = os.getenv(key, "").strip()
-        if value:
-            env[key] = value
+    for key in (
+        "SLACK_ALERT_CHANNEL_ID",
+        "ADMIN_SLACK_USER_ID",
+        "ADMIN_PASSWORD",
+        "OPENSKY_CREDENTIALS_JSON",
+        "GROQ_API_KEY",
+    ):
+        if os.getenv(key, "").strip():
+            env[key] = os.environ[key].strip()
     return env
 
 
-def _service_payload(runtime_env: dict[str, str]) -> dict[str, Any]:
+def service_body(env: dict[str, str]) -> dict[str, Any]:
     return {
         "name": "Aircraft Alerts",
         "description": "Slack Socket Mode aircraft alert service and 5-second ADS-B worker",
         "billing": {"deploymentPlan": "nf-compute-10"},
         "deployment": {"instances": 1, "docker": {"configType": "default"}},
-        "ports": [{"name": "http", "internalPort": 8000, "public": True, "protocol": "HTTP"}],
+        "ports": [
+            {"name": "http", "internalPort": 8000, "public": True, "protocol": "HTTP"}
+        ],
         "disabledCI": True,
         "buildSource": "git",
-        "vcsData": {"projectUrl": REPO_URL, "projectType": "github", "projectBranch": "main"},
-        "buildSettings": {"dockerfile": {"buildEngine": "buildkit", "dockerFilePath": "/Dockerfile", "dockerWorkDir": "/"}},
-        "runtimeEnvironment": runtime_env,
+        "vcsData": {
+            "projectUrl": REPO,
+            "projectType": "github",
+            "projectBranch": "main",
+        },
+        "buildSettings": {
+            "dockerfile": {
+                "buildEngine": "buildkit",
+                "dockerFilePath": "/Dockerfile",
+                "dockerWorkDir": "/",
+            }
+        },
+        "runtimeEnvironment": env,
     }
 
 
-def _service(nf: Northflank, project_id: str, runtime_env: dict[str, str]) -> str:
-    existing = nf.get_optional(f"/projects/{project_id}/services/{SERVICE_ID}")
-    payload = _service_payload(runtime_env)
-    if existing:
-        service_id = str(existing.get("id", SERVICE_ID))
-        nf.request("PATCH", f"/projects/{project_id}/services/combined/{service_id}", json=payload)
-        print(f"Updated Northflank service: {service_id}")
+def ensure_service(nf: NF, project_id: str, env: dict[str, str]) -> str:
+    current = nf.get(f"/projects/{project_id}/services/{SERVICE}")
+    body = service_body(env)
+    if current:
+        service_id = str(current.get("id", SERVICE))
+        nf.call("PATCH", f"/projects/{project_id}/services/combined/{service_id}", body)
+        print("Updated Northflank service.")
         return service_id
-    data = nf.request("POST", f"/projects/{project_id}/services/combined", json=payload).json().get("data", {})
-    service_id = str(data.get("id", SERVICE_ID))
+    created = nf.call("POST", f"/projects/{project_id}/services/combined", body)
+    service_id = str(created.get("id", SERVICE))
     print(f"Created Northflank service: {service_id}")
     return service_id
 
 
-def _trigger_build(nf: Northflank, project_id: str, service_id: str) -> None:
-    sha = os.getenv("GITHUB_SHA", "").strip()
-    payload: dict[str, str] = {}
-    if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
-        payload["sha"] = sha
-    nf.request("POST", f"/projects/{project_id}/services/{service_id}/build", json=payload, allowed=(200, 201, 202, 204))
+def deploy_service(nf: NF, project_id: str, service_id: str) -> None:
+    sha = os.getenv("GITHUB_SHA", "")
+    body = {"sha": sha} if re.fullmatch(r"[0-9a-fA-F]{40}", sha) else {}
+    nf.call(
+        "POST",
+        f"/projects/{project_id}/services/{service_id}/build",
+        body,
+        ok=(200, 201, 202, 204),
+    )
     print("Northflank build triggered.")
 
-
-def _wait_for_service(nf: Northflank, project_id: str, service_id: str) -> dict[str, Any]:
     deadline = time.time() + 900
     last = ""
     while time.time() < deadline:
-        data = nf.get_optional(f"/projects/{project_id}/services/{service_id}")
-        if not data:
-            raise RuntimeError("Northflank service disappeared")
-        status = data.get("status", {})
-        build = str(status.get("build", {}).get("status", "")).upper() if isinstance(status, dict) else ""
-        deployment = str(status.get("deployment", {}).get("status", "")).upper() if isinstance(status, dict) else ""
+        service = nf.get(f"/projects/{project_id}/services/{service_id}") or {}
+        status = service.get("status", {})
+        build = (
+            str((status.get("build") or {}).get("status", "")).upper()
+            if isinstance(status, dict)
+            else ""
+        )
+        deployment = (
+            str((status.get("deployment") or {}).get("status", "")).upper()
+            if isinstance(status, dict)
+            else ""
+        )
         summary = f"build={build or '?'} deployment={deployment or '?'}"
         if summary != last:
             print(f"Service status: {summary}")
@@ -266,64 +323,38 @@ def _wait_for_service(nf: Northflank, project_id: str, service_id: str) -> dict[
             raise RuntimeError(f"Northflank build failed: {build}")
         if deployment in {"FAILED", "FAILURE", "CRASHED"}:
             raise RuntimeError(f"Northflank deployment failed: {deployment}")
-        if build in {"SUCCESS", "SUCCEEDED", "COMPLETED"} and deployment in {"COMPLETED", "SUCCESS", "RUNNING"}:
-            return data
+        if build in {"SUCCESS", "SUCCEEDED", "COMPLETED"} and deployment in {
+            "COMPLETED",
+            "SUCCESS",
+            "RUNNING",
+        }:
+            return
         time.sleep(10)
-    raise RuntimeError("Northflank service did not become ready before deployment timeout")
-
-
-def _public_url(nf: Northflank, project_id: str, service_id: str) -> str:
-    response = nf.client.get(f"/projects/{project_id}/services/{service_id}/ports")
-    if response.status_code != 200:
-        return ""
-    payload = response.json()
-    data = payload.get("data", payload)
-
-    def walk(value: Any) -> str:
-        if isinstance(value, dict):
-            for key, item in value.items():
-                k = str(key).lower()
-                if isinstance(item, str) and item:
-                    if k in {"dns", "fqdn", "hostname"} and "." in item:
-                        return item if item.startswith("http") else f"https://{item}"
-                    if k in {"url", "endpoint"} and item.startswith("http"):
-                        return item
-            for item in value.values():
-                found = walk(item)
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for item in value:
-                found = walk(item)
-                if found:
-                    return found
-        return ""
-
-    return walk(data)
+    raise RuntimeError("Northflank service deployment timeout")
 
 
 def main() -> int:
-    print("Deploying Aircraft Alert v3.1 to Northflank...")
-    nf = Northflank()
-    project_id = _project(nf)
-    addon_id = _addon(nf, project_id)
-    _wait_for_addon(nf, project_id, addon_id)
-    mongo_uri = _mongo_uri(nf, project_id, addon_id)
-    print("MongoDB credentials resolved (value hidden).")
-    service_id = _service(nf, project_id, _runtime_env(mongo_uri))
-    _trigger_build(nf, project_id, service_id)
-    _wait_for_service(nf, project_id, service_id)
-    url = _public_url(nf, project_id, service_id)
-    print("Northflank deployment is running.")
-    if url:
-        print(f"Public URL: {url}")
-        try:
-            response = httpx.get(f"{url.rstrip('/')}/health", timeout=15)
-            print(f"Health endpoint HTTP {response.status_code}")
-            if response.status_code != 200:
-                return 1
-        except Exception as exc:
-            print(f"Health endpoint could not be verified yet: {_redact(str(exc))}")
+    slack_ready = bool(
+        os.getenv("SLACK_BOT_TOKEN", "").strip() and os.getenv("SLACK_APP_TOKEN", "").strip()
+    )
+    print(
+        "Deploying Aircraft Alert v3.1 to Northflank "
+        f"(Slack credentials {'present' if slack_ready else 'not yet present'})..."
+    )
+    nf = NF()
+    project_id = ensure_project(nf)
+    addon_id = ensure_addon(nf, project_id)
+    wait_addon(nf, project_id, addon_id)
+    uri = mongo_uri(nf, project_id, addon_id)
+    print("MongoDB connection resolved (value hidden).")
+    service_id = ensure_service(nf, project_id, environment(uri))
+    deploy_service(nf, project_id, service_id)
+    print("Northflank infrastructure and application service are deployed.")
+    if not slack_ready:
+        print(
+            "Slack Socket Mode is intentionally inactive until GitHub secrets "
+            "SLACK_BOT_TOKEN and SLACK_APP_TOKEN are added; rerun this workflow afterwards."
+        )
     return 0
 
 
@@ -331,5 +362,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"DEPLOYMENT ERROR: {_redact(str(exc))}", file=sys.stderr)
+        print(f"DEPLOYMENT ERROR: {redact(str(exc))}", file=sys.stderr)
         raise SystemExit(1)
