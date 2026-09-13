@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     # Trajectory prediction
     predictor_service_url: str = ""
+    early_warning_buffer_km: float = 15.0
 
     # Monitoring
     poll_interval_seconds: int = 5
