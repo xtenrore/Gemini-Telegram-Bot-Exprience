@@ -37,18 +37,22 @@ class Settings(BaseSettings):
         "opensky-network/protocol/openid-connect/token"
     )
 
-    # OpenSky API keys directory (contains .json credential files)
+    # Prefer OPENSKY_CREDENTIALS_JSON in hosted environments. Example:
+    # [{"clientId":"id1","clientSecret":"secret1"},{"clientId":"id2","clientSecret":"secret2"}]
+    opensky_credentials_json: str = ""
+    # Optional local fallback directory containing untracked JSON credential files.
     api_keys_dir: str = "api"
 
     # ── AI Providers ───────────────────────────────────────────────────
     gemini_api_key: str = ""
-    gemini_model_primary: str = "gemini-2.0-flash-lite"
-    gemini_model_secondary: str = "gemini-2.0-flash-lite"
+    # Gemini 3.1 Flash-Lite currently has a Gemini API free tier and is well suited
+    # to the bot's short classification/analysis prompts.
+    gemini_model_primary: str = "gemini-3.1-flash-lite"
+    gemini_model_secondary: str = "gemini-2.5-flash-lite"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
     # ── Trajectory Prediction ───────────────────────────────────────────
-    # Kinematic trajectory calculation runs natively in-process.
     predictor_service_url: str = ""  # Optional remote override if desired
 
     # ── Monitoring ──────────────────────────────────────────────────────
@@ -57,12 +61,12 @@ class Settings(BaseSettings):
     cooldown_minutes: int = 30
 
     # ── Learning ────────────────────────────────────────────────────────
-    learning_plane_threshold: int = 100  # planes to observe before selecting providers
-    relearn_plane_count: int = 25  # extra planes on dislike feedback
+    learning_plane_threshold: int = 100
+    relearn_plane_count: int = 25
 
     # ── Admin ───────────────────────────────────────────────────────────
     admin_telegram_id: int | None = None
-    admin_password: str = ""  # Optional password for admin panel
+    admin_password: str = ""
 
     # ── Server ──────────────────────────────────────────────────────────
     host: str = "0.0.0.0"
@@ -70,5 +74,4 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
 
-# Singleton – import this everywhere
 settings = Settings()
