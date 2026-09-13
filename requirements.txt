@@ -1,39 +1,17 @@
-# Aircraft Alert Bot - Dependencies
+# Aircraft Alert v3.2 - Telegram + Gemini photography
 
-# Web framework & server
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
-
-# Slack Bot API (primary messaging runtime)
-slack-bolt>=1.21.0
-slack-sdk>=3.33.0
-aiohttp>=3.10.0
-
-# Legacy Telegram modules are retained temporarily for compatibility tests only.
-# The v3.1 runtime does not start or use Telegram.
 python-telegram-bot[webhooks,job-queue]>=21.5
-
-# MongoDB async driver
 motor>=3.3.0
 pymongo>=4.9.0
-
-# HTTP client (async)
 httpx>=0.27.0
-
-# Configuration & validation
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
 python-dotenv>=1.0.0
-
-# Geospatial
 geohash2>=1.1
-
-# Background task scheduling
+astral>=3.2
 apscheduler>=3.10.4
-
-# System monitoring
 psutil>=5.9.0
-
-# Logging & Process management
 structlog>=24.4.0
 honcho>=1.1.0
