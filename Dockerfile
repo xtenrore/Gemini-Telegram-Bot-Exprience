@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONMALLOC=malloc
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -18,7 +19,7 @@ COPY . .
 
 EXPOSE 8000
 
-# Exactly two processes: one FastAPI/Telegram process and one monitor worker.
-# The old Procfile also launched `python -m app.main`, creating a second web
-# server on the same port and a duplicate Telegram client.
-CMD ["honcho", "start", "web", "worker"]
+# v3.2 Back4app profile: one Python interpreter runs FastAPI, Telegram long
+# polling and the integrated five-second ADS-B monitor. This avoids duplicating
+# the full application in a second worker process on the 256 MB free container.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
