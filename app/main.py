@@ -21,11 +21,32 @@ from app.bot.handlers import register_handlers
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
 from app.photography.telegram import register_photography_handlers
-from app.worker.monitor import get_cycle_stats, init_services
+from app.worker.monitor import get_cycle_stats, init_services, run_monitor_cycle
 
 logger = logging.getLogger(__name__)
 telegram_app: Application | None = None
 _server_start_time: float = time.time()
+
+
+async def _monitor_loop() -> None:
+    """Run the ADS-B monitor in-process to fit small container memory limits."""
+    logger.info("Integrated ADS-B worker enabled: interval=%ds", settings.poll_interval_seconds)
+    while True:
+        cycle_started = time.monotonic()
+        try:
+            # get_db raises until the Atlas connection has been established.
+            get_db()
+            await run_monitor_cycle()
+        except asyncio.CancelledError:
+            raise
+        except RuntimeError:
+            logger.debug("Integrated worker waiting for MongoDB connection")
+        except Exception:
+            logger.exception("Integrated ADS-B monitor iteration failed")
+
+        elapsed = time.monotonic() - cycle_started
+        delay = max(0.25, float(settings.poll_interval_seconds) - elapsed)
+        await asyncio.sleep(delay)
 
 
 @asynccontextmanager
@@ -38,27 +59,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     logger.info("Initializing Aircraft Alert v3.2 (Telegram + Gemini Photography)...")
 
-    db_reconnect_task = None
+    db_reconnect_task: asyncio.Task | None = None
+    monitor_task: asyncio.Task | None = None
 
     async def _reconnect_db_loop() -> None:
         while True:
             try:
-                await connect_db(max_retries=1, retry_delay=1.0, timeout_ms=2000)
+                await connect_db(max_retries=1, retry_delay=1.0, timeout_ms=10000)
                 logger.info("MongoDB background connection established.")
                 break
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                logger.warning("MongoDB not ready yet (%s). Retrying in 3s...", exc)
-                await asyncio.sleep(3)
+                logger.warning("MongoDB not ready yet (%s). Retrying in 5s...", type(exc).__name__)
+                await asyncio.sleep(5)
 
     try:
-        await connect_db(max_retries=1, retry_delay=0.5, timeout_ms=1000)
+        await connect_db(max_retries=2, retry_delay=1.0, timeout_ms=10000)
     except Exception as exc:
-        logger.warning("MongoDB not reachable immediately: %s. Launching reconnect loop...", exc)
-        db_reconnect_task = asyncio.create_task(_reconnect_db_loop())
+        logger.warning("MongoDB not reachable immediately: %s. Launching reconnect loop...", type(exc).__name__)
+        db_reconnect_task = asyncio.create_task(_reconnect_db_loop(), name="mongo-reconnect")
 
     key_count = opensky_key_manager.load_keys()
     logger.info("OpenSky key manager: %d key(s) available.", key_count)
     await init_services()
+
+    # Back4app free containers are memory-constrained. Keep monitoring in the same
+    # Python process rather than launching a duplicate worker interpreter.
+    monitor_task = asyncio.create_task(_monitor_loop(), name="aircraft-monitor")
 
     bot_token = settings.telegram_bot_token.strip()
     if bot_token and bot_token != "your_bot_token_from_botfather":
@@ -116,8 +144,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as exc:
             logger.warning("Error stopping Telegram app: %s", exc)
 
-    if db_reconnect_task and not db_reconnect_task.done():
-        db_reconnect_task.cancel()
+    for task in (monitor_task, db_reconnect_task):
+        if task and not task.done():
+            task.cancel()
+    for task in (monitor_task, db_reconnect_task):
+        if task:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Background task failed during shutdown")
+
     await close_http_client()
     await close_db()
 
