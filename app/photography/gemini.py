@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, TypeVar
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -18,7 +19,7 @@ from app.photography.models import CameraProfile, LensProfile, PhotoRecommendati
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
-_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+_GENERATE_CONTENT_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 class GeminiPhotographyError(RuntimeError):
@@ -26,7 +27,23 @@ class GeminiPhotographyError(RuntimeError):
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:
+    """Extract text from generateContent, while retaining old Interactions support."""
     chunks: list[str] = []
+
+    # generateContent response shape.
+    for candidate in payload.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content") or {}
+        if not isinstance(content, dict):
+            continue
+        for part in content.get("parts") or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip():
+                chunks.append(part["text"])
+    if chunks:
+        return "".join(chunks).strip()
+
+    # Backwards compatibility for any recorded Interactions payloads/tests.
     for step in payload.get("steps") or []:
         if not isinstance(step, dict) or step.get("type") != "model_output":
             continue
@@ -61,6 +78,22 @@ def _parse_json_text(text: str) -> dict[str, Any]:
     return value
 
 
+def _gemini_json_schema(model_cls: type[BaseModel]) -> dict[str, Any]:
+    """Return Pydantic JSON schema with unsupported generation-only metadata removed."""
+    schema = model_cls.model_json_schema()
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        # `default` is emitted heavily by Pydantic but is not part of Gemini's
+        # documented structured-output JSON Schema subset and is not needed here.
+        return {key: clean(item) for key, item in value.items() if key not in {"default", "examples"}}
+
+    return clean(schema)
+
+
 class GeminiPhotographyEngine:
     """Structured Gemini client specialized for aviation photography."""
 
@@ -72,33 +105,56 @@ class GeminiPhotographyEngine:
     def enabled(self) -> bool:
         return bool(settings.gemini_api_key.strip() and self._models)
 
-    async def _structured(self, prompt: str, model_cls: type[T], *, thinking_level: str = "medium") -> tuple[T, str]:
+    async def _structured(
+        self,
+        prompt: str,
+        model_cls: type[T],
+        *,
+        thinking_level: str = "medium",
+        fast_first: bool = False,
+    ) -> tuple[T, str]:
+        """Run a single-turn structured request using Gemini generateContent.
+
+        Camera and lens identification are latency-sensitive and simple, so they try
+        the Flash-Lite fallback first. Full photographic recommendations continue to
+        prefer the configured primary model.
+        """
         if not self.enabled:
             raise GeminiPhotographyError("GEMINI_API_KEY is not configured")
+
+        models = list(reversed(self._models)) if fast_first and len(self._models) > 1 else self._models
         last_error: Exception | None = None
-        for model_id in self._models:
+        schema = _gemini_json_schema(model_cls)
+        timeout_seconds = min(settings.gemini_photo_timeout_seconds, 15.0) if fast_first else settings.gemini_photo_timeout_seconds
+        headers = {"x-goog-api-key": settings.gemini_api_key, "Content-Type": "application/json"}
+
+        for model_id in models:
+            endpoint = f"{_GENERATE_CONTENT_BASE}/{quote(model_id, safe='')}:generateContent"
             payload = {
-                "model": model_id,
-                "store": False,
-                "input": prompt,
-                "generation_config": {"thinking_level": thinking_level, "temperature": 0.2},
-                "response_format": {
-                    "type": "text",
-                    "mime_type": "application/json",
-                    "schema": model_cls.model_json_schema(),
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "thinkingConfig": {"thinkingLevel": thinking_level},
+                    "responseMimeType": "application/json",
+                    "responseJsonSchema": schema,
                 },
             }
-            headers = {"x-goog-api-key": settings.gemini_api_key, "Content-Type": "application/json"}
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(settings.gemini_photo_timeout_seconds)) as client:
-                    response = await client.post(_INTERACTIONS_URL, headers=headers, json=payload)
+                timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(endpoint, headers=headers, json=payload)
                 response.raise_for_status()
                 result = model_cls.model_validate(_parse_json_text(_extract_output_text(response.json())))
+                logger.info("Gemini photography model %s succeeded via generateContent", model_id)
                 return result, model_id
             except (httpx.HTTPError, ValidationError, ValueError, KeyError, TypeError, GeminiPhotographyError) as exc:
                 last_error = exc
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-                logger.warning("Gemini photography model %s failed%s; trying fallback if available", model_id, f" (HTTP {status})" if status else "")
+                logger.warning(
+                    "Gemini photography model %s failed via generateContent%s (%s); trying fallback if available",
+                    model_id,
+                    f" (HTTP {status})" if status else "",
+                    type(exc).__name__,
+                )
         raise GeminiPhotographyError(f"All Gemini photography models failed: {type(last_error).__name__ if last_error else 'unknown error'}")
 
     async def resolve_camera(self, user_text: str) -> CameraProfile:
@@ -108,7 +164,7 @@ Resolve the body accurately for fast-moving aircraft photography.
 Never invent exact specifications when uncertain: use null, lower confidence, and explain ambiguity in assumptions.
 Normalize brand/model but preserve raw_input. camera_type should be mirrorless, DSLR, compact, bridge, phone, action camera, or unknown.
 Mention autofocus capabilities only when reasonably confident. confidence is identification confidence, not camera quality. Do not give shooting settings yet.'''
-        profile, _ = await self._structured(prompt, CameraProfile, thinking_level="low")
+        profile, _ = await self._structured(prompt, CameraProfile, thinking_level="low", fast_first=True)
         if not profile.raw_input:
             profile.raw_input = user_text
         return profile
@@ -120,7 +176,7 @@ Camera context: {camera_hint}
 User lens description: {user_text!r}
 Resolve the lens conservatively. Never invent exact focal/aperture/stabilization specifications when unsure; use null and assumptions.
 Normalize brand/model, preserve raw_input, handle built-in bridge/phone lenses honestly, and set confidence 0..1. Do not recommend settings yet.'''
-        profile, _ = await self._structured(prompt, LensProfile, thinking_level="low")
+        profile, _ = await self._structured(prompt, LensProfile, thinking_level="low", fast_first=True)
         if not profile.raw_input:
             profile.raw_input = user_text
         return profile
