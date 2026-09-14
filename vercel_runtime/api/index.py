@@ -1,15 +1,18 @@
-"""Serverless ingress and secure GitHub-OIDC bootstrap for Plane? v3.2."""
+"""Serverless ingress and secure GitHub-OIDC bootstrap for Plane? v3.3."""
 from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 import jwt
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pymongo import MongoClient
 from vercel.workflow import start
@@ -22,7 +25,8 @@ from plane_workflows_fixed import (
     webhook_path_secret,
 )
 
-app = FastAPI(title="Plane? Telegram Bot v3.2", docs_url=None, redoc_url=None)
+app = FastAPI(title="Plane? Telegram Bot v3.3", docs_url=None, redoc_url=None)
+logger = logging.getLogger(__name__)
 
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_AUDIENCE = "plane-bot-vercel-bootstrap"
@@ -133,12 +137,12 @@ def _verify_mongo_runtime(config: RuntimeConfig) -> tuple[bool, bool, bool]:
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"service": "plane-telegram-bot", "version": "3.2", "status": "online"}
+    return {"service": "plane-telegram-bot", "version": "3.3", "status": "online"}
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "service": "plane-telegram-bot", "version": "3.2"}
+    return {"ok": True, "service": "plane-telegram-bot", "version": "3.3"}
 
 
 @app.post("/bootstrap")
@@ -181,20 +185,59 @@ async def telegram_ingress(
     path_secret: str,
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
-) -> dict[str, bool]:
+) -> Any:
+    """Accept Telegram updates and ACK callback buttons in the webhook response.
+
+    Telegram supports invoking a Bot API method directly from the JSON webhook
+    response. For callback queries v3.3 uses that path to execute
+    ``answerCallbackQuery`` without waiting for MongoDB, Gemini or the durable handler
+    to finish. The durable workflow still receives the original update and performs
+    the actual state/UI change.
+    """
+    started = time.perf_counter()
     expected_header = telegram_secret_header(path_secret)
     if not x_telegram_bot_api_secret_token or not hmac.compare_digest(
         expected_header, x_telegram_bot_api_secret_token
     ):
         raise HTTPException(status_code=403, detail="Telegram secret rejected")
+
     payload = await request.json()
     if not isinstance(payload, dict) or "update_id" not in payload:
         raise HTTPException(status_code=400, detail="Invalid Telegram update")
+
+    callback = payload.get("callback_query")
+    callback_id = ""
+    if isinstance(callback, dict):
+        callback_id = str(callback.get("id") or "")
+
     event = TelegramUpdate(update=payload)
+    resume_started = time.perf_counter()
     try:
         await event.resume(f"telegram:{path_secret}")
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Telegram workflow is not ready") from exc
+
+    resume_ms = int((time.perf_counter() - resume_started) * 1000)
+    total_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "Telegram v3.3 ingress accepted update_id=%s callback=%s resume_ms=%d total_ms=%d",
+        payload.get("update_id"),
+        bool(callback_id),
+        resume_ms,
+        total_ms,
+    )
+
+    if callback_id:
+        # Telegram executes this Bot API method from the webhook response itself. This
+        # removes the client-side button spinner before the durable handler completes.
+        return JSONResponse(
+            content={
+                "method": "answerCallbackQuery",
+                "callback_query_id": callback_id,
+            },
+            headers={"X-Plane-Version": "3.3"},
+        )
+
     return {"ok": True}
 
 
