@@ -44,3 +44,11 @@ def test_slow_photo_work_is_detached_from_ordered_telegram_queue():
     assert "telegram_slow_update_workflow" in text
     assert "await start(telegram_slow_update_workflow" in text
     assert "await process_telegram_update" in text
+
+
+def test_monitor_and_bootstrap_do_not_close_shared_mongo_client():
+    text = _runtime_text()
+    configure = text.split("async def configure_telegram", 1)[1].split("async def process_telegram_update", 1)[0]
+    monitor = text.split("async def monitor_cycle_step", 1)[1].split("async def telegram_slow_update_workflow", 1)[0]
+    assert "close_db" not in configure
+    assert "close_db" not in monitor
