@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-# Regression coverage for the v3.2 serverless Telegram latency path.
+# Regression coverage for v3.2 Telegram latency and shared Mongo lifetime.
 RUNTIME = Path("vercel_runtime/plane_workflows.py")
 
 
