@@ -33,3 +33,13 @@ def test_latency_instrumentation_is_present_without_config_dump():
     assert "source_ms=" in text
     assert "init_ms=" in text
     assert "logger.info(config" not in text
+
+
+def test_slow_photo_work_is_detached_from_ordered_telegram_queue():
+    text = _runtime_text()
+    assert "_should_detach_telegram_update" in text
+    assert 'data.startswith("photo:")' in text
+    assert '{"/photo", "/conditions"}' in text
+    assert "telegram_slow_update_workflow" in text
+    assert "await start(telegram_slow_update_workflow" in text
+    assert "await process_telegram_update" in text
