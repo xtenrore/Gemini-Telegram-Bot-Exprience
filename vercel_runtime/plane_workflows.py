@@ -303,23 +303,21 @@ async def configure_telegram(
 
     _download_source(generation)
     _apply_runtime_config(config)
-    from app.database import close_db, connect_db, system_status_col
+    from app.database import connect_db, system_status_col
 
-    # Bootstrap is the single intentional place that verifies/creates indexes.
+    # Bootstrap is the single intentional place that verifies/creates indexes. Keep
+    # the shared Motor client alive: monitor and Telegram steps may reuse this process.
     await connect_db(max_retries=2, retry_delay=0.5, timeout_ms=8000, ensure_indexes=True)
-    try:
-        await system_status_col().update_one(
-            {"_id": "telegram_runtime"},
-            {"$set": {
-                "generation": generation,
-                "bot_username": identity.get("username", ""),
-                "webhook_host": base_url,
-                "ready": True,
-            }},
-            upsert=True,
-        )
-    finally:
-        await close_db()
+    await system_status_col().update_one(
+        {"_id": "telegram_runtime"},
+        {"$set": {
+            "generation": generation,
+            "bot_username": identity.get("username", ""),
+            "webhook_host": base_url,
+            "ready": True,
+        }},
+        upsert=True,
+    )
 
     return {"username": identity.get("username", ""), "webhook": True}
 
@@ -355,31 +353,29 @@ async def monitor_cycle_step(config: dict[str, Any], generation: str) -> bool:
     _download_source(generation)
     _apply_runtime_config(config)
 
-    from app.database import close_db, connect_db
+    from app.database import connect_db
     from app.worker.monitor import init_services, run_monitor_cycle
 
-    # Index maintenance is bootstrap work, not three-minute monitor-cycle work.
+    # Reuse the process-wide Motor client. Closing it here can invalidate an in-flight
+    # Telegram handler that is sharing the same warm serverless process.
     await connect_db(max_retries=2, retry_delay=0.25, timeout_ms=6000, ensure_indexes=False)
-    try:
-        if not await _runtime_is_current(generation):
-            return False
-        await init_services()
-        await run_monitor_cycle()
-        from app.database import system_status_col
-        from datetime import datetime, timezone
-        await system_status_col().update_one(
-            {"_id": "vercel_monitor"},
-            {"$set": {
-                "generation": generation,
-                "ready": True,
-                "updated_at": datetime.now(timezone.utc),
-            }},
-            upsert=True,
-        )
-        logger.info("Monitor cycle completed generation=%s total_ms=%d", generation[:12], int((time.perf_counter() - started) * 1000))
-        return True
-    finally:
-        await close_db()
+    if not await _runtime_is_current(generation):
+        return False
+    await init_services()
+    await run_monitor_cycle()
+    from app.database import system_status_col
+    from datetime import datetime, timezone
+    await system_status_col().update_one(
+        {"_id": "vercel_monitor"},
+        {"$set": {
+            "generation": generation,
+            "ready": True,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    logger.info("Monitor cycle completed generation=%s total_ms=%d", generation[:12], int((time.perf_counter() - started) * 1000))
+    return True
 
 
 @wf.workflow
