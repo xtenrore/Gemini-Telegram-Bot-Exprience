@@ -388,6 +388,17 @@ async def telegram_slow_update_workflow(
     await process_telegram_update(config=config, generation=generation, payload=payload)
 
 
+@wf.step
+async def launch_slow_telegram_update(
+    config: dict[str, Any],
+    generation: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Start slow work from a step because workflow bodies must stay deterministic."""
+    await start(telegram_slow_update_workflow, config, generation, payload)
+    return True
+
+
 @wf.workflow
 async def telegram_workflow(
     config: dict[str, Any],
@@ -401,9 +412,20 @@ async def telegram_workflow(
     async for event in TelegramUpdate.wait(token=hook_token):
         if _should_detach_telegram_update(event.update):
             logger.info("Detaching slow Telegram update update_id=%s", event.update.get("update_id"))
-            await start(telegram_slow_update_workflow, config, generation, event.update)
+            await launch_slow_telegram_update(
+                config=config,
+                generation=generation,
+                payload=event.update,
+            )
             continue
         await process_telegram_update(config=config, generation=generation, payload=event.update)
+
+
+@wf.step
+async def chain_monitor_workflow(config: dict[str, Any], generation: str) -> bool:
+    """Chain the next daily monitor run outside the deterministic workflow body."""
+    await start(monitor_workflow, config, generation)
+    return True
 
 
 @wf.workflow
@@ -415,4 +437,4 @@ async def monitor_workflow(config: dict[str, Any], generation: str) -> None:
         await sleep(MONITOR_INTERVAL)
 
     # Keep individual event logs bounded while continuing indefinitely.
-    await start(monitor_workflow, config, generation)
+    await chain_monitor_workflow(config=config, generation=generation)
