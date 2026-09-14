@@ -60,6 +60,30 @@ def telegram_secret_header(path_secret: str) -> str:
     return hashlib.sha256(f"telegram-header|{path_secret}".encode()).hexdigest()[:48]
 
 
+def _should_detach_telegram_update(payload: dict[str, Any]) -> bool:
+    """Keep slow photo analysis from blocking the ordered Telegram setup queue.
+
+    Setup/preferences callbacks mutate user state and intentionally stay serialized.
+    Photo analysis is read-heavy and may spend tens of seconds in weather/Gemini, so
+    it is safe to execute in its own durable workflow.
+    """
+    callback = payload.get("callback_query")
+    if isinstance(callback, dict):
+        data = callback.get("data")
+        if isinstance(data, str) and data.startswith("photo:"):
+            return True
+
+    message = payload.get("message") or payload.get("edited_message")
+    if isinstance(message, dict):
+        text = message.get("text")
+        if isinstance(text, str) and text.strip():
+            command_token = text.strip().split(maxsplit=1)[0]
+            command = command_token.split("@", 1)[0].lower()
+            if command in {"/photo", "/conditions"}:
+                return True
+    return False
+
+
 def _runtime_lock() -> asyncio.Lock:
     global _telegram_runtime_lock
     if _telegram_runtime_lock is None:
@@ -359,6 +383,16 @@ async def monitor_cycle_step(config: dict[str, Any], generation: str) -> bool:
 
 
 @wf.workflow
+async def telegram_slow_update_workflow(
+    config: dict[str, Any],
+    generation: str,
+    payload: dict[str, Any],
+) -> None:
+    """Process one expensive photo update without blocking ordinary Telegram input."""
+    await process_telegram_update(config=config, generation=generation, payload=payload)
+
+
+@wf.workflow
 async def telegram_workflow(
     config: dict[str, Any],
     generation: str,
@@ -369,6 +403,10 @@ async def telegram_workflow(
     hook_token = f"telegram:{path_secret}"
 
     async for event in TelegramUpdate.wait(token=hook_token):
+        if _should_detach_telegram_update(event.update):
+            logger.info("Detaching slow Telegram update update_id=%s", event.update.get("update_id"))
+            await start(telegram_slow_update_workflow, config, generation, event.update)
+            continue
         await process_telegram_update(config=config, generation=generation, payload=event.update)
 
 
