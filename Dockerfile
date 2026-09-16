@@ -16,10 +16,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN chmod +x /app/scripts/railway-entrypoint.sh
 
 EXPOSE 8000
 
-# v3.2 Back4app profile: one Python interpreter runs FastAPI, Telegram long
-# polling and the integrated five-second ADS-B monitor. This avoids duplicating
-# the full application in a second worker process on the 256 MB free container.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+# One Python interpreter runs FastAPI, Telegram, and the integrated ADS-B monitor.
+# On Railway the entrypoint first verifies that Telegram, MongoDB, and Gemini
+# credentials are actually present so a broken deployment cannot appear healthy.
+CMD ["/app/scripts/railway-entrypoint.sh"]
