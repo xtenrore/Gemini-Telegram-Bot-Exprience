@@ -1,23 +1,10 @@
-"""Aircraft data providers — 5 sources queried in parallel.
-
-Providers (all free):
-  - ADSB.lol       — unlimited, no rate limit, has type data
-  - ADSB.fi        — unlimited, 2s spacing, has type data
-  - OpenSky        — credit-limited (key rotation), 5s spacing, OAuth2, NO type data
-  - Airplanes.Live — unlimited, 2s spacing, has type data
-  - ADSB.one       — unlimited, 2s spacing, has type data
-
-Strategy:
-  1. During learning: query ALL 5 providers in parallel
-  2. After learning: query the learned best + reliable set per user
-  3. Merge results by icao24, prefer records with aircraft_type data
-"""
-
+"""Aircraft data providers with v3.4 data-quality normalization."""
 from __future__ import annotations
 
 import abc
 import asyncio
 import logging
+import math
 import time
 from typing import Any
 
@@ -28,26 +15,17 @@ from app.aircraft.models import NormalizedAircraft
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Shared async HTTP client (re-used across requests for connection pooling)
 _http_client: httpx.AsyncClient | None = None
 
 
 async def get_http_client() -> httpx.AsyncClient:
-    """Return (and lazily create) a shared ``httpx.AsyncClient``."""
-    global _http_client  # noqa: PLW0603
+    global _http_client
     if _http_client is None or _http_client.is_closed:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
         _http_client = httpx.AsyncClient(
-            headers=headers,
+            headers={
+                "User-Agent": "Plane-Spotting-Intelligence/3.4",
+                "Accept": "application/json, text/plain, */*",
+            },
             timeout=httpx.Timeout(connect=3.0, read=4.0, write=3.0, pool=3.0),
             follow_redirects=True,
         )
@@ -55,43 +33,30 @@ async def get_http_client() -> httpx.AsyncClient:
 
 
 async def close_http_client() -> None:
-    """Close the shared HTTP client (call at shutdown)."""
-    global _http_client  # noqa: PLW0603
+    global _http_client
     if _http_client is not None and not _http_client.is_closed:
         await _http_client.aclose()
-        _http_client = None
+    _http_client = None
 
-
-# ── Abstract base ────────────────────────────────────────────────────────────
 
 class AircraftDataProvider(abc.ABC):
-    """Interface that every aircraft data source must implement."""
-
-    name: str = "base"
-    is_unlimited: bool = True  # Whether this provider has unlimited free requests
+    name = "base"
+    is_unlimited = True
 
     def __init__(self) -> None:
-        self.request_count: int = 0
-        self.error_count: int = 0
-        self.last_request_time: float = 0.0
-        self.last_success_time: float = 0.0
-        self.last_error: str = ""
+        self.request_count = 0
+        self.error_count = 0
+        self.last_request_time = 0.0
+        self.last_success_time = 0.0
+        self.last_error = ""
 
     @abc.abstractmethod
-    async def get_aircraft_in_area(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-    ) -> list[NormalizedAircraft]:
-        """Fetch aircraft near *latitude*/*longitude* within *radius_nm* NM."""
+    async def get_aircraft_in_area(self, latitude: float, longitude: float, radius_nm: int = 250) -> list[NormalizedAircraft]: ...
 
     def can_request_now(self) -> bool:
-        """Check if we can make a request right now (rate limit check)."""
         return True
 
     def get_status(self) -> dict[str, Any]:
-        """Return provider status for admin dashboard."""
         return {
             "name": self.name,
             "is_unlimited": self.is_unlimited,
@@ -104,275 +69,153 @@ class AircraftDataProvider(abc.ABC):
         }
 
 
-# ── ADSB.lol ─────────────────────────────────────────────────────────────────
-
-class ADSBLolProvider(AircraftDataProvider):
-    """Primary provider — unlimited, no rate limits, has type data."""
-
-    name = "adsb.lol"
-    is_unlimited = True
-
-    async def get_aircraft_in_area(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-    ) -> list[NormalizedAircraft]:
-        client = await get_http_client()
-        url = f"{settings.adsb_lol_base_url}/point/{latitude}/{longitude}/{radius_nm}"
-        logger.debug("[%s] GET %s", self.name, url)
-
-        self.last_request_time = time.time()
-        self.request_count += 1
-
-        resp = await client.get(url)
-        resp.raise_for_status()
-        self.last_success_time = time.time()
-        data = resp.json()
-        return parse_adsb_response(data)
-
-
-# ── ADSB.fi ──────────────────────────────────────────────────────────────────
-
-class ADSBFiProvider(AircraftDataProvider):
-    """Fallback provider — unlimited, 1 req/s (2s spacing enforced), has type data."""
-
-    name = "adsb.fi"
-    is_unlimited = True
-    _min_interval: float = 2.0  # seconds
+class _V2Provider(AircraftDataProvider):
+    base_url_setting = ""
+    path_style = "point"
+    _min_interval = 0.0
 
     def can_request_now(self) -> bool:
-        return (time.monotonic() - self.last_request_time) >= self._min_interval or self.last_request_time == 0.0
+        if not self._min_interval or not self.last_request_time:
+            return True
+        return time.monotonic() - self.last_request_time >= self._min_interval
 
-    async def get_aircraft_in_area(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-    ) -> list[NormalizedAircraft]:
-        # Wait for rate limit window if needed
-        elapsed = time.monotonic() - self.last_request_time
-        if self.last_request_time > 0 and elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-
+    async def get_aircraft_in_area(self, latitude: float, longitude: float, radius_nm: int = 250) -> list[NormalizedAircraft]:
+        if self._min_interval and self.last_request_time:
+            elapsed = time.monotonic() - self.last_request_time
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
         client = await get_http_client()
-        url = f"{settings.adsb_fi_base_url}/lat/{latitude}/lon/{longitude}/dist/{radius_nm}"
-        logger.debug("[%s] GET %s", self.name, url)
-
-        self.last_request_time = time.monotonic()
+        base = str(getattr(settings, self.base_url_setting)).rstrip("/")
+        url = (
+            f"{base}/lat/{latitude}/lon/{longitude}/dist/{radius_nm}"
+            if self.path_style == "latlon"
+            else f"{base}/point/{latitude}/{longitude}/{radius_nm}"
+        )
+        self.last_request_time = time.monotonic() if self._min_interval else time.time()
         self.request_count += 1
-
         resp = await client.get(url)
-        if resp.status_code == 404:
-            fallback_url = f"https://opendata.adsb.fi/api/v3/lat/{latitude}/lon/{longitude}/dist/{radius_nm}"
-            resp = await client.get(fallback_url)
-
-        resp.raise_for_status()
-        self.last_success_time = time.time()
-        data = resp.json()
-        return parse_adsb_response(data)
-
-
-# ── Airplanes.Live ───────────────────────────────────────────────────────────
-
-class AirplanesLiveProvider(AircraftDataProvider):
-    """Community provider — free, no key, 2s spacing, has type data.
-
-    Uses the same v2 API format as ADSB.lol / ADSB.fi.
-    """
-
-    name = "airplanes.live"
-    is_unlimited = True
-    _min_interval: float = 2.0
-
-    def can_request_now(self) -> bool:
-        return (time.monotonic() - self.last_request_time) >= self._min_interval or self.last_request_time == 0.0
-
-    async def get_aircraft_in_area(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-    ) -> list[NormalizedAircraft]:
-        elapsed = time.monotonic() - self.last_request_time
-        if self.last_request_time > 0 and elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-
-        client = await get_http_client()
-        url = f"{settings.airplanes_live_base_url}/point/{latitude}/{longitude}/{radius_nm}"
-        logger.debug("[%s] GET %s", self.name, url)
-
-        self.last_request_time = time.monotonic()
-        self.request_count += 1
-
-        resp = await client.get(url)
-        resp.raise_for_status()
-        self.last_success_time = time.time()
-        data = resp.json()
-        return parse_adsb_response(data)
-
-
-# ── ADSB.one ─────────────────────────────────────────────────────────────────
-
-class ADSBOneProvider(AircraftDataProvider):
-    """Community provider — free, no key, 2s spacing, has type data.
-
-    Uses the same v2 API format as ADSB.lol / ADSB.fi.
-    """
-
-    name = "adsb.one"
-    is_unlimited = True
-    _min_interval: float = 2.0
-
-    def can_request_now(self) -> bool:
-        return (time.monotonic() - self.last_request_time) >= self._min_interval or self.last_request_time == 0.0
-
-    async def get_aircraft_in_area(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-    ) -> list[NormalizedAircraft]:
-        elapsed = time.monotonic() - self.last_request_time
-        if self.last_request_time > 0 and elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-
-        client = await get_http_client()
-        url = f"{settings.adsb_one_base_url}/point/{latitude}/{longitude}/{radius_nm}"
-        logger.debug("[%s] GET %s", self.name, url)
-
-        self.last_request_time = time.monotonic()
-        self.request_count += 1
-
-        try:
-            resp = await client.get(url)
-            if resp.status_code in (403, 404, 429):
-                self.error_count += 1
-                self.last_error = f"HTTP {resp.status_code}"
-                return []
-            resp.raise_for_status()
-            self.last_success_time = time.time()
-            data = resp.json()
-            return parse_adsb_response(data)
-        except Exception as exc:
+        if self.name == "adsb.fi" and resp.status_code == 404:
+            resp = await client.get(f"https://opendata.adsb.fi/api/v3/lat/{latitude}/lon/{longitude}/dist/{radius_nm}")
+        if self.name == "adsb.one" and resp.status_code in (403, 404, 429):
             self.error_count += 1
-            self.last_error = str(exc)
+            self.last_error = f"HTTP {resp.status_code}"
             return []
+        resp.raise_for_status()
+        self.last_success_time = time.time()
+        return parse_adsb_response(resp.json())
 
 
-# ── OpenSky ──────────────────────────────────────────────────────────────────
+class ADSBLolProvider(_V2Provider):
+    name = "adsb.lol"
+    base_url_setting = "adsb_lol_base_url"
+
+
+class ADSBFiProvider(_V2Provider):
+    name = "adsb.fi"
+    base_url_setting = "adsb_fi_base_url"
+    path_style = "latlon"
+    _min_interval = 2.0
+
+
+class AirplanesLiveProvider(_V2Provider):
+    name = "airplanes.live"
+    base_url_setting = "airplanes_live_base_url"
+    _min_interval = 2.0
+
+
+class ADSBOneProvider(_V2Provider):
+    name = "adsb.one"
+    base_url_setting = "adsb_one_base_url"
+    _min_interval = 2.0
+
 
 class OpenSkyProvider(AircraftDataProvider):
-    """Backup provider — credit-limited, OAuth2 key rotation, NO type data.
-
-    OpenSky never provides aircraft_type, so it only adds origin_country.
-    It's kept as a low-priority fallback behind the 3 community providers.
-    """
-
     name = "opensky"
     is_unlimited = False
-    _min_interval: float = 5.0
-    _last_mono: float = 0.0  # monotonic clock for rate limiting
+    _min_interval = 5.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_mono = 0.0
 
     def can_request_now(self) -> bool:
-        if opensky_key_manager.all_exhausted:
+        if opensky_key_manager.all_exhausted or not opensky_key_manager.has_keys:
             return False
-        if not opensky_key_manager.has_keys:
-            return False
-        return (time.monotonic() - self._last_mono) >= self._min_interval or self._last_mono == 0.0
+        return not self._last_mono or time.monotonic() - self._last_mono >= self._min_interval
 
-    async def get_aircraft_in_area(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-    ) -> list[NormalizedAircraft]:
-        # Get Bearer token via OAuth2
+    async def get_aircraft_in_area(self, latitude: float, longitude: float, radius_nm: int = 250) -> list[NormalizedAircraft]:
         token = await opensky_key_manager.get_bearer_token()
         if token is None:
-            logger.debug("[%s] No available credentials — skipping.", self.name)
             return []
-
-        # Rate limit spacing
-        elapsed = time.monotonic() - self._last_mono
-        if self._last_mono > 0 and elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-
-        # Convert radius to bounding box
+        if self._last_mono:
+            elapsed = time.monotonic() - self._last_mono
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
         degree_offset = radius_nm / 60.0
-        lamin = latitude - degree_offset
-        lamax = latitude + degree_offset
-        lomin = longitude - degree_offset
-        lomax = longitude + degree_offset
-
+        params = {
+            "lamin": latitude - degree_offset,
+            "lamax": latitude + degree_offset,
+            "lomin": longitude - degree_offset,
+            "lomax": longitude + degree_offset,
+        }
         client = await get_http_client()
         url = f"{settings.opensky_base_url}/states/all"
-        params = {"lamin": lamin, "lamax": lamax, "lomin": lomin, "lomax": lomax}
         headers = {"Authorization": f"Bearer {token}"}
-        logger.debug("[%s] GET %s params=%s", self.name, url, params)
-
         self._last_mono = time.monotonic()
         self.last_request_time = time.time()
         self.request_count += 1
-
         try:
             resp = await client.get(url, params=params, headers=headers)
-
-            # Handle 401 — token expired, refresh and retry once
             if resp.status_code == 401:
-                logger.info("[%s] Token expired (401), refreshing...", self.name)
                 new_token = await opensky_key_manager.refresh_current_token()
-                if new_token:
-                    headers = {"Authorization": f"Bearer {new_token}"}
-                    resp = await client.get(url, params=params, headers=headers)
-                else:
-                    self.last_error = "Token refresh failed"
+                if not new_token:
                     self.error_count += 1
+                    self.last_error = "Token refresh failed"
                     return []
-
+                resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {new_token}"})
             if resp.status_code == 429:
                 opensky_key_manager.mark_rate_limited()
-                self.last_error = "Rate limited (HTTP 429)"
                 self.error_count += 1
+                self.last_error = "Rate limited (HTTP 429)"
                 return []
-
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 opensky_key_manager.mark_rate_limited()
             raise
-
         opensky_key_manager.record_request()
         self.last_success_time = time.time()
-        data = resp.json()
-        return self._parse(data)
+        return self._parse(resp.json())
 
     @staticmethod
     def _parse(data: dict[str, Any]) -> list[NormalizedAircraft]:
-        """Parse OpenSky ``/states/all`` response."""
-        aircraft_list: list[NormalizedAircraft] = []
-        states = data.get("states") or []
-        for sv in states:
+        out: list[NormalizedAircraft] = []
+        now = time.time()
+        for sv in data.get("states") or []:
             if len(sv) < 17:
                 continue
             try:
-                aircraft_list.append(
+                age = max(0.0, now - float(sv[3])) if sv[3] is not None else None
+                out.append(
                     NormalizedAircraft(
                         icao24=(sv[0] or "").lower().strip(),
                         callsign=(sv[1] or "").strip(),
                         origin_country=sv[2] or "",
                         latitude=sv[6],
                         longitude=sv[5],
-                        altitude=sv[7],  # barometric altitude in metres
-                        velocity=sv[9],  # ground speed in m/s
+                        altitude=sv[7],
+                        velocity=sv[9],
                         heading=sv[10],
-                        aircraft_type="",  # OpenSky doesn't provide type
+                        vertical_rate_mps=_number(sv[11]),
+                        position_age_s=age,
+                        data_quality=_quality(age, sv[9], sv[10]),
+                        aircraft_type="",
                         timestamp=sv[3],
                     )
                 )
             except Exception:
-                logger.debug("Skipping malformed OpenSky state vector: %s", sv[:4])
-        return aircraft_list
+                logger.debug("Skipping malformed OpenSky vector: %s", sv[:4])
+        return out
 
     def get_status(self) -> dict[str, Any]:
         status = super().get_status()
@@ -386,214 +229,156 @@ class OpenSkyProvider(AircraftDataProvider):
         return status
 
 
-# ── Provider Manager ─────────────────────────────────────────────────────────
-
 class ProviderManager:
-    """Query providers in parallel, merge and deduplicate results.
-
-    During learning phase (per user), all 5 providers are queried.
-    After learning, queries only the user's learned provider set.
-    """
-
     def __init__(self) -> None:
         self.adsb_lol = ADSBLolProvider()
         self.adsb_fi = ADSBFiProvider()
         self.opensky = OpenSkyProvider()
         self.airplanes_live = AirplanesLiveProvider()
         self.adsb_one = ADSBOneProvider()
-        self._all_providers: list[AircraftDataProvider] = [
-            self.adsb_lol,
-            self.adsb_fi,
-            self.airplanes_live,
-            self.adsb_one,
-            # OpenSky is available as optional backup via get_providers_by_names
-        ]
-
+        self._all_providers: list[AircraftDataProvider] = [self.adsb_lol, self.adsb_fi, self.airplanes_live, self.adsb_one]
         self._type_cache: dict[str, str] = {}
 
-    def get_providers_by_names(
-        self, names: list[str] | None = None
-    ) -> list[AircraftDataProvider]:
-        """Return providers filtered by name list, or all if None."""
+    def get_providers_by_names(self, names: list[str] | None = None) -> list[AircraftDataProvider]:
         if names is None:
             return list(self._all_providers)
-        name_set = set(names)
-        # Check all instantiated providers, including OpenSky if requested
         all_available = self._all_providers + [self.opensky]
-        return [p for p in all_available if p.name in name_set]
+        wanted = set(names)
+        return [p for p in all_available if p.name in wanted]
 
-    async def query_providers(
-        self,
-        latitude: float,
-        longitude: float,
-        radius_nm: int = 250,
-        provider_names: list[str] | None = None,
-    ) -> tuple[list[NormalizedAircraft], dict[str, list[NormalizedAircraft]]]:
-        """Query specified providers (or all), merge and return results.
-
-        Returns:
-            Tuple of (merged_aircraft_list, results_by_provider_name)
-        """
-        providers_to_query = self.get_providers_by_names(provider_names)
-
-        # Query in parallel
-        tasks = []
-        queried_names = []
-        for provider in providers_to_query:
-            if not provider.can_request_now():
-                logger.debug("Skipping %s (rate limit window)", provider.name)
-                continue
-            tasks.append(self._safe_query(provider, latitude, longitude, radius_nm))
-            queried_names.append(provider.name)
-
+    async def query_providers(self, latitude: float, longitude: float, radius_nm: int = 250, provider_names: list[str] | None = None) -> tuple[list[NormalizedAircraft], dict[str, list[NormalizedAircraft]]]:
+        providers = self.get_providers_by_names(provider_names)
+        tasks: list[Any] = []
+        names: list[str] = []
+        for provider in providers:
+            if provider.can_request_now():
+                tasks.append(self._safe_query(provider, latitude, longitude, radius_nm))
+                names.append(provider.name)
         if not tasks:
-            logger.warning("No providers available for this cycle.")
+            logger.warning("No ADS-B providers available for this cycle")
             return [], {}
-
         results = await asyncio.gather(*tasks)
-
-        # Build results-by-provider dict
-        results_by_provider: dict[str, list[NormalizedAircraft]] = {}
-        for name, aircraft_list in zip(queried_names, results):
-            results_by_provider[name] = aircraft_list
-
-        # Merge all results
-        merged = self._merge_results(results_by_provider)
-
-        total_from_all = sum(len(v) for v in results_by_provider.values())
+        by_provider = {name: result for name, result in zip(names, results)}
+        merged = self._merge_results(by_provider)
         logger.info(
             "Multi-provider query: %d raw from %d provider(s) -> %d merged unique",
-            total_from_all,
-            len(results_by_provider),
+            sum(len(v) for v in by_provider.values()),
+            len(by_provider),
             len(merged),
         )
+        return merged, by_provider
 
-        return merged, results_by_provider
-
-    async def _safe_query(
-        self,
-        provider: AircraftDataProvider,
-        latitude: float,
-        longitude: float,
-        radius_nm: int,
-    ) -> list[NormalizedAircraft]:
-        """Query a single provider with error handling and strict cycle timeout."""
-        # Calculate maximum allowed query time (less than poll interval)
+    async def _safe_query(self, provider: AircraftDataProvider, latitude: float, longitude: float, radius_nm: int) -> list[NormalizedAircraft]:
         max_timeout = max(2.5, min(float(settings.poll_interval_seconds) - 1.0, 4.0))
         try:
-            result = await asyncio.wait_for(
-                provider.get_aircraft_in_area(latitude, longitude, radius_nm),
-                timeout=max_timeout,
-            )
-            logger.debug(
-                "Provider %s returned %d aircraft", provider.name, len(result)
-            )
-            return result
+            return await asyncio.wait_for(provider.get_aircraft_in_area(latitude, longitude, radius_nm), timeout=max_timeout)
         except asyncio.TimeoutError:
             provider.error_count += 1
             provider.last_error = f"Timeout (>{max_timeout:.1f}s)"
-            logger.debug("Provider %s timed out (>%.1fs)", provider.name, max_timeout)
-            return []
         except httpx.HTTPStatusError as exc:
             provider.error_count += 1
             provider.last_error = f"HTTP {exc.response.status_code}"
-            logger.debug("Provider %s HTTP error %d: %s", provider.name, exc.response.status_code, exc)
-            return []
         except Exception as exc:
             provider.error_count += 1
-            provider.last_error = str(exc)
-            logger.warning("Provider %s failed: %s", provider.name, exc)
-            return []
+            provider.last_error = type(exc).__name__
+            logger.warning("Provider %s failed: %s", provider.name, type(exc).__name__)
+        return []
 
-    def _merge_results(
-        self,
-        results_by_provider: dict[str, list[NormalizedAircraft]],
-    ) -> list[NormalizedAircraft]:
-        """Merge and deduplicate aircraft from all providers with type caching."""
+    def _merge_results(self, results_by_provider: dict[str, list[NormalizedAircraft]]) -> list[NormalizedAircraft]:
         merged: dict[str, NormalizedAircraft] = {}
-
-        # Update persistent type cache from all provider records
-        for aircraft_list in results_by_provider.values():
-            for ac in aircraft_list:
+        for records in results_by_provider.values():
+            for ac in records:
                 if ac.icao24 and ac.aircraft_type:
                     self._type_cache[ac.icao24] = ac.aircraft_type.upper()
-
-        for provider_name, aircraft_list in results_by_provider.items():
-            for ac in aircraft_list:
+        for records in results_by_provider.values():
+            for ac in records:
                 if not ac.has_position:
                     continue
-
-                # Auto-enrich missing aircraft_type from type cache if available
                 if not ac.aircraft_type and ac.icao24 in self._type_cache:
                     ac = ac.model_copy(update={"aircraft_type": self._type_cache[ac.icao24]})
-
                 existing = merged.get(ac.icao24)
                 if existing is None:
                     merged[ac.icao24] = ac
-                else:
-                    if ac.aircraft_type and not existing.aircraft_type:
-                        if not ac.origin_country and existing.origin_country:
-                            ac = ac.model_copy(update={"origin_country": existing.origin_country})
-                        merged[ac.icao24] = ac
-                    elif not ac.aircraft_type and existing.aircraft_type:
-                        if ac.origin_country and not existing.origin_country:
-                            merged[ac.icao24] = existing.model_copy(update={"origin_country": ac.origin_country})
-                    else:
-                        if ac.origin_country and not existing.origin_country:
-                            merged[ac.icao24] = existing.model_copy(update={"origin_country": ac.origin_country})
-
+                    continue
+                existing_age = existing.position_age_s if existing.position_age_s is not None else 9999.0
+                ac_age = ac.position_age_s if ac.position_age_s is not None else 9999.0
+                preferred = ac if ac_age < existing_age else existing
+                other = existing if preferred is ac else ac
+                updates: dict[str, Any] = {}
+                if not preferred.aircraft_type and other.aircraft_type:
+                    updates["aircraft_type"] = other.aircraft_type
+                if not preferred.origin_country and other.origin_country:
+                    updates["origin_country"] = other.origin_country
+                if preferred.vertical_rate_mps is None and other.vertical_rate_mps is not None:
+                    updates["vertical_rate_mps"] = other.vertical_rate_mps
+                merged[ac.icao24] = preferred.model_copy(update=updates) if updates else preferred
         return list(merged.values())
 
     def get_all_provider_status(self) -> list[dict[str, Any]]:
-        """Return status dicts for all providers (for admin dashboard)."""
         return [p.get_status() for p in self._all_providers]
 
 
-# ── Response parsing ─────────────────────────────────────────────────────────
-
 def parse_adsb_response(data: dict[str, Any]) -> list[NormalizedAircraft]:
-    """Parse the ADSB.lol / ADSB.fi / Airplanes.Live / ADSB.one v2 JSON response."""
-    aircraft_list: list[NormalizedAircraft] = []
+    out: list[NormalizedAircraft] = []
+    now = time.time()
     for ac in data.get("ac", []):
         try:
-            aircraft_list.append(
+            seen = _number(ac.get("seen_pos"))
+            if seen is not None and seen > 1_000_000_000:
+                seen = max(0.0, now - seen)
+            vertical_fpm = ac.get("baro_rate") if ac.get("baro_rate") is not None else ac.get("geom_rate")
+            out.append(
                 NormalizedAircraft(
-                    icao24=ac.get("hex", "").lower().strip(),
+                    icao24=(ac.get("hex") or "").lower().strip(),
                     callsign=(ac.get("flight") or "").strip(),
-                    origin_country="",  # Not in this API
+                    origin_country="",
                     latitude=ac.get("lat"),
                     longitude=ac.get("lon"),
                     altitude=_feet_to_metres(ac.get("alt_baro")),
                     velocity=_knots_to_ms(ac.get("gs")),
-                    heading=ac.get("track"),
+                    heading=_number(ac.get("track")),
+                    turn_rate=_number(ac.get("track_rate")) or 0.0,
+                    vertical_rate_mps=_fpm_to_mps(vertical_fpm),
+                    position_age_s=seen,
+                    data_quality=_quality(seen, ac.get("gs"), ac.get("track")),
                     aircraft_type=(ac.get("t") or "").strip().upper(),
                     timestamp=ac.get("seen_pos"),
                 )
             )
         except Exception:
             logger.debug("Skipping malformed aircraft record: %s", ac)
-    return aircraft_list
+    return out
 
 
-# ── Unit conversion helpers ──────────────────────────────────────────────────
-
-def _feet_to_metres(feet: Any) -> float | None:
-    """Convert feet to metres.  Returns None for non-numeric inputs."""
-    if feet is None:
-        return None
+def _number(value: Any) -> float | None:
     try:
-        value = float(feet)
+        number = float(value)
+        return None if math.isnan(number) or math.isinf(number) else number
     except (TypeError, ValueError):
         return None
-    return round(value * 0.3048, 1)
+
+
+def _feet_to_metres(feet: Any) -> float | None:
+    value = _number(feet)
+    return None if value is None else round(value * 0.3048, 1)
 
 
 def _knots_to_ms(knots: Any) -> float | None:
-    """Convert knots to m/s.  Returns None for non-numeric inputs."""
-    if knots is None:
-        return None
-    try:
-        value = float(knots)
-    except (TypeError, ValueError):
-        return None
-    return round(value * 0.514444, 1)
+    value = _number(knots)
+    return None if value is None else round(value * 0.514444, 1)
+
+
+def _fpm_to_mps(fpm: Any) -> float | None:
+    value = _number(fpm)
+    return None if value is None else round(value * 0.00508, 3)
+
+
+def _quality(age: float | None, speed: Any, heading: Any) -> str:
+    if age is None:
+        return "unknown"
+    fields = sum(v is not None for v in (_number(speed), _number(heading)))
+    if age <= 2.5 and fields == 2:
+        return "high"
+    if age <= 10 and fields >= 1:
+        return "medium"
+    return "low"
