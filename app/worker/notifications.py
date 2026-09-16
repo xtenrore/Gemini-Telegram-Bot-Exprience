@@ -15,6 +15,9 @@ from app.photography.keyboards import notification_actions_keyboard
 logger=logging.getLogger(__name__);_send_semaphore=asyncio.Semaphore(20);_MIN_SEND_INTERVAL=.05;_bot_instance:Bot|None=None
 
 def _safe(v:str)->str:return escape(v or "",quote=True)
+def _safe_provider_text(value:str)->str:
+    """Backward-compatible provider escaping helper retained for existing callers/tests."""
+    return _safe(value)
 def _get_bot()->Bot:
     global _bot_instance
     if _bot_instance is None or _bot_instance.token!=settings.telegram_bot_token:_bot_instance=Bot(token=settings.telegram_bot_token)
