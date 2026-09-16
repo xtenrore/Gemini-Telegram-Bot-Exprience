@@ -1,0 +1,30 @@
+from pathlib import Path
+
+
+ENTRYPOINT = Path("scripts/railway-entrypoint.sh")
+DOCKERFILE = Path("Dockerfile")
+
+
+def _text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def test_railway_requires_core_runtime_secrets_before_starting():
+    text = _text(ENTRYPOINT)
+    assert "RAILWAY_ENVIRONMENT" in text
+    assert "TELEGRAM_BOT_TOKEN MONGO_URI GEMINI_API_KEY" in text
+    assert "exit 78" in text
+
+
+def test_railway_guard_does_not_echo_secret_values():
+    text = _text(ENTRYPOINT)
+    assert 'echo "$TELEGRAM_BOT_TOKEN"' not in text
+    assert 'echo "$MONGO_URI"' not in text
+    assert 'echo "$GEMINI_API_KEY"' not in text
+    assert "Missing:$missing" in text
+
+
+def test_dockerfile_uses_strict_railway_entrypoint():
+    text = _text(DOCKERFILE)
+    assert "chmod +x /app/scripts/railway-entrypoint.sh" in text
+    assert 'CMD ["/app/scripts/railway-entrypoint.sh"]' in text
