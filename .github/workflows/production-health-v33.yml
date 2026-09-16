@@ -1,0 +1,216 @@
+name: Production health watch v3.3
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,37 * * * *"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: plane-production-health-v33
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      VERCEL_BASE_URL: https://plane-telegram-bot.vercel.app
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      MONGO_URI: ${{ secrets.MONGO_URI }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENSKY_CREDENTIALS_JSON: ${{ secrets.OPENSKY_CREDENTIALS_JSON }}
+      ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+      ADMIN_TELEGRAM_ID: ${{ secrets.ADMIN_TELEGRAM_ID }}
+    steps:
+      - name: Install health-check dependency
+        run: python -m pip install --disable-pip-version-check --quiet "pymongo[srv]>=4.9,<5"
+
+      - name: Deep production verification
+        shell: python
+        run: |
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          from pymongo import MongoClient
+
+          required = ("TELEGRAM_BOT_TOKEN", "MONGO_URI", "GEMINI_API_KEY")
+          if any(not os.environ.get(name, "").strip() for name in required):
+              print("Required production secret configuration is incomplete")
+              sys.exit(1)
+
+          base = os.environ["VERCEL_BASE_URL"].rstrip("/")
+
+          started = time.monotonic()
+          try:
+              with urllib.request.urlopen(base + "/health", timeout=10) as response:
+                  health = json.load(response)
+                  health_status = response.status
+          except Exception as exc:
+              print(f"Public health request failed: {type(exc).__name__}")
+              sys.exit(1)
+          health_ms = int((time.monotonic() - started) * 1000)
+          if health_status != 200 or not health.get("ok"):
+              print(f"Public health unhealthy: HTTP {health_status}")
+              sys.exit(1)
+          print(f"Public health OK ({health_ms} ms)")
+          if health_ms > 5000:
+              print("Public health latency exceeded 5 second budget")
+              sys.exit(1)
+
+          audience = "plane-bot-vercel-bootstrap"
+          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in oidc_url else "?"
+          oidc_url += separator + urllib.parse.urlencode({"audience": audience})
+          oidc_req = urllib.request.Request(
+              oidc_url,
+              headers={"Authorization": f"bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(oidc_req, timeout=15) as response:
+              oidc = json.load(response)["value"]
+
+          admin_id_raw = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+          config = {
+              "telegram_bot_token": os.environ["TELEGRAM_BOT_TOKEN"],
+              "mongo_uri": os.environ["MONGO_URI"],
+              "gemini_api_key": os.environ["GEMINI_API_KEY"],
+              "generation": os.environ["GITHUB_SHA"],
+              "database_name": "aircraft_bot",
+              "groq_api_key": os.environ.get("GROQ_API_KEY", ""),
+              "opensky_credentials_json": os.environ.get("OPENSKY_CREDENTIALS_JSON", ""),
+              "admin_password": os.environ.get("ADMIN_PASSWORD", ""),
+              "admin_telegram_id": int(admin_id_raw) if admin_id_raw else None,
+          }
+          body = json.dumps(config, separators=(",", ":")).encode()
+          verify_req = urllib.request.Request(
+              base + "/verify",
+              data=body,
+              headers={
+                  "Authorization": f"Bearer {oidc}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+
+          started = time.monotonic()
+          try:
+              with urllib.request.urlopen(verify_req, timeout=45) as response:
+                  result = json.load(response)
+                  status = response.status
+          except urllib.error.HTTPError as exc:
+              print(f"Deep verification failed safely: HTTP {exc.code}")
+              sys.exit(1)
+          except Exception as exc:
+              print(f"Deep verification request failed: {type(exc).__name__}")
+              sys.exit(1)
+          verify_ms = int((time.monotonic() - started) * 1000)
+
+          safe = {
+              key: result.get(key)
+              for key in (
+                  "ready",
+                  "mongodb",
+                  "monitor",
+                  "telegram",
+                  "telegram_runtime",
+                  "webhook",
+                  "gemini",
+                  "bot_username",
+              )
+          }
+          print("Deep verification:", json.dumps(safe, sort_keys=True))
+          print(f"Deep verification latency: {verify_ms} ms")
+          if status != 200 or not result.get("ready"):
+              sys.exit(1)
+          if result.get("bot_username") != "planebotnotifierbot":
+              print("Unexpected Telegram bot identity")
+              sys.exit(1)
+
+          client = MongoClient(
+              os.environ["MONGO_URI"],
+              serverSelectionTimeoutMS=8000,
+              connectTimeoutMS=8000,
+              maxPoolSize=2,
+              appname="plane-v33-health-watch",
+          )
+          try:
+              client.admin.command("ping")
+              status_col = client["aircraft_bot"]["system_status"]
+              monitor = status_col.find_one({"_id": "vercel_monitor"}) or {}
+              runtime = status_col.find_one({"_id": "vercel_runtime"}) or {}
+          finally:
+              client.close()
+
+          updated_at = monitor.get("updated_at")
+          if not isinstance(updated_at, datetime):
+              print("Monitor heartbeat timestamp missing")
+              sys.exit(1)
+          if updated_at.tzinfo is None:
+              updated_at = updated_at.replace(tzinfo=timezone.utc)
+          else:
+              updated_at = updated_at.astimezone(timezone.utc)
+          monitor_age = max(0, int((datetime.now(timezone.utc) - updated_at).total_seconds()))
+          monitor_generation_ok = monitor.get("generation") == os.environ["GITHUB_SHA"]
+          runtime_generation_ok = (
+              runtime.get("generation") == os.environ["GITHUB_SHA"]
+              and runtime.get("state") == "running"
+          )
+          monitor_ready = bool(monitor.get("ready"))
+          print(
+              "Monitor heartbeat:",
+              json.dumps(
+                  {
+                      "age_seconds": monitor_age,
+                      "generation_current": monitor_generation_ok,
+                      "ready": monitor_ready,
+                      "runtime_current": runtime_generation_ok,
+                  },
+                  sort_keys=True,
+              ),
+          )
+          if not monitor_generation_ok or not runtime_generation_ok or not monitor_ready:
+              sys.exit(1)
+          if monitor_age > 600:
+              print("Monitor heartbeat is stale (>10 minutes)")
+              sys.exit(1)
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          webhook_info_url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
+          try:
+              with urllib.request.urlopen(webhook_info_url, timeout=15) as response:
+                  webhook_info = json.load(response).get("result") or {}
+          except Exception as exc:
+              print(f"Telegram webhook health request failed: {type(exc).__name__}")
+              sys.exit(1)
+
+          pending = int(webhook_info.get("pending_update_count") or 0)
+          last_error_date = int(webhook_info.get("last_error_date") or 0)
+          error_age = None
+          if last_error_date:
+              error_age = max(0, int(time.time()) - last_error_date)
+          print(
+              "Telegram delivery health:",
+              json.dumps(
+                  {
+                      "pending_updates": pending,
+                      "recent_delivery_error": error_age is not None and error_age < 900,
+                  },
+                  sort_keys=True,
+              ),
+          )
+          if pending > 25:
+              print("Telegram pending update backlog exceeded safety threshold")
+              sys.exit(1)
+          if error_age is not None and error_age < 900:
+              print("Telegram reported a delivery error within the last 15 minutes")
+              sys.exit(1)
