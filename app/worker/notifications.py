@@ -23,15 +23,17 @@ def _clock(seconds:float|None)->str:
     if seconds is None:return "—"
     s=max(0,int(round(seconds)));return f"{s//60:02d}:{s%60:02d}"
 
-def _approach_text(ac,pred,stage,camera=None,environment=None,previous_cpa_km=None)->str:
+def _approach_text(ac,pred,stage,camera=None,environment=None,previous_cpa_km=None,observed_closest_km=None,prediction_changed=False)->str:
     title={"prepare":"📡 <b>NEXT SHOT</b>","camera_ready":"📷 <b>CAMERA READY</b>","photo_now":"🔥 <b>PHOTO NOW</b>","passed":"✅ <b>AIRCRAFT PASSED</b>","cancelled":"↪️ <b>TRAJECTORY CHANGED</b>"}.get(stage,"✈️ <b>SPOTTING</b>")
     lines=[title,f"\n<b>{_safe(ac.callsign) or _safe(ac.aircraft_type) or 'Aircraft'}</b> · <code>{_safe(ac.aircraft_type or 'Unknown')}</code>",f"ICAO: <code>{_safe(ac.icao24)}</code>"]
+    if prediction_changed and stage not in {"cancelled","passed"}:lines.append("\n🔄 <b>Prediction changed</b> — recalculated from newer ADS-B trajectory data.")
     if stage=="cancelled":
         lines += ["\nApproach alert cancelled.",f"New closest projected pass: <b>{pred.projected_closest_km:.1f} km</b>"]
         if previous_cpa_km is not None:lines.append(f"Previous prediction: {float(previous_cpa_km):.1f} km")
         return "\n".join(lines)
     if stage!="passed":
         countdown=camera.best_window_start_s if camera and camera.best_window_start_s is not None else pred.time_to_cpa_s;lines.append(f"\n<b>{_clock(countdown)}</b> until best shooting window")
+    if stage=="passed" and observed_closest_km is not None:lines.append(f"Closest observed distance: <b>{float(observed_closest_km):.1f} km</b>")
     lines += [f"Closest projected pass: <b>{pred.projected_closest_km:.1f} km</b>",f"Trajectory: <b>{escape(pred.state)}</b>",f"Confidence: <b>{escape(pred.confidence)}</b>",f"Current distance: {pred.current_distance_km:.1f} km"]
     if pred.projected_closest_slant_km is not None:lines.append(f"Closest slant distance: ~{pred.projected_closest_slant_km:.1f} km")
     if ac.altitude is not None:lines.append(f"Altitude: {int(round(ac.altitude*3.28084)):,} ft")
@@ -58,12 +60,12 @@ async def _record_photo_snapshot(user_id:int,aircraft:NormalizedAircraft,distanc
     if not notification_id:return
     now=datetime.now(timezone.utc);await get_db()["photo_alert_snapshots"].update_one({"_id":notification_id,"user_id":user_id},{"$set":{"user_id":user_id,"aircraft_icao24":aircraft.icao24 or "","aircraft_type":aircraft.aircraft_type or aircraft.display_type or "","callsign":aircraft.callsign or "","distance_km":float(distance_km),"altitude_m":aircraft.altitude,"speed_ms":aircraft.velocity,"heading_deg":aircraft.heading,"vertical_rate_mps":getattr(aircraft,"vertical_rate_mps",None),"position_age_s":getattr(aircraft,"position_age_s",None),"latitude":aircraft.latitude,"longitude":aircraft.longitude,"eta_seconds":eta_seconds,"captured_at":now,"expires_at":now+timedelta(hours=6)}},upsert=True)
 
-async def send_or_update_approach(user_id:int,aircraft,prediction,stage:str,notification_id:str,message_id:int|None=None,*,camera=None,environment=None,previous_cpa_km=None)->int|None:
-    text=_approach_text(aircraft,prediction,stage,camera,environment,previous_cpa_km);markup=notification_actions_keyboard(notification_id) if notification_id else None
+async def send_or_update_approach(user_id:int,aircraft,prediction,stage:str,notification_id:str,message_id:int|None=None,*,camera=None,environment=None,previous_cpa_km=None,observed_closest_km=None,prediction_changed=False)->int|None:
+    text=_approach_text(aircraft,prediction,stage,camera,environment,previous_cpa_km,observed_closest_km,prediction_changed);markup=notification_actions_keyboard(notification_id) if notification_id else None
     if notification_id:
         try:
             await _record_photo_snapshot(user_id,aircraft,prediction.current_distance_km,notification_id,prediction.time_to_cpa_s);now=datetime.now(timezone.utc)
-            await get_db()["notification_history"].update_one({"_id":notification_id},{"$set":{"user_id":user_id,"aircraft_icao24":aircraft.icao24,"aircraft_type":aircraft.aircraft_type,"distance_km":prediction.current_distance_km,"projected_closest_km":prediction.projected_closest_km,"trajectory_state":prediction.state,"prediction_confidence":prediction.confidence,"notified_at":now,"cooldown_until":now+timedelta(minutes=settings.cooldown_minutes)}},upsert=True)
+            await get_db()["notification_history"].update_one({"_id":notification_id},{"$set":{"user_id":user_id,"aircraft_icao24":aircraft.icao24,"aircraft_type":aircraft.aircraft_type,"distance_km":prediction.current_distance_km,"projected_closest_km":prediction.projected_closest_km,"observed_closest_km":observed_closest_km,"trajectory_state":prediction.state,"prediction_confidence":prediction.confidence,"notified_at":now,"cooldown_until":now+timedelta(minutes=settings.cooldown_minutes)}},upsert=True)
         except Exception:logger.exception("approach_snapshot_failed user=%s icao=%s",user_id,aircraft.icao24)
     async with _send_semaphore:
         try:
