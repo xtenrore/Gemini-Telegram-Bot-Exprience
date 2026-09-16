@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-
 from app.config import settings
 
 if TYPE_CHECKING:
@@ -20,12 +19,9 @@ _indexes_ready_for: tuple[str, str] | None = None
 
 
 def _mongo_target_label(uri: str) -> str:
-    """Return a credential-free Mongo target label for logs."""
     try:
         parsed = urlsplit(uri)
-        host = parsed.hostname or "unknown-host"
-        scheme = parsed.scheme or "mongodb"
-        return f"{scheme}://{host}"
+        return f"{parsed.scheme or 'mongodb'}://{parsed.hostname or 'unknown-host'}"
     except Exception:
         return "mongodb://configured-host"
 
@@ -34,27 +30,13 @@ def _index_cache_key() -> tuple[str, str]:
     return (_mongo_target_label(settings.mongo_uri), settings.database_name)
 
 
-async def connect_db(
-    max_retries: int = 5,
-    retry_delay: float = 2.0,
-    timeout_ms: int = 10000,
-    *,
-    ensure_indexes: bool = True,
-) -> AsyncIOMotorDatabase:
-    """Connect to MongoDB/Atlas with conservative retry and memory settings.
-
-    Warm serverless invocations may reuse the existing Motor client. Index creation is
-    intentionally cacheable because asking Atlas to re-check the full index set on
-    every Telegram update adds avoidable latency.
-    """
+async def connect_db(max_retries: int = 5, retry_delay: float = 2.0, timeout_ms: int = 10000, *, ensure_indexes: bool = True) -> AsyncIOMotorDatabase:
     global _client, _db, _indexes_ready_for
-
     if _client is not None and _db is not None:
         if ensure_indexes and _indexes_ready_for != _index_cache_key():
             await _ensure_indexes(_db)
             _indexes_ready_for = _index_cache_key()
         return _db
-
     target = _mongo_target_label(settings.mongo_uri)
     for attempt in range(1, max_retries + 1):
         try:
@@ -66,7 +48,7 @@ async def connect_db(
                 maxPoolSize=5,
                 minPoolSize=0,
                 maxIdleTimeMS=60000,
-                appname="aircraft-alert-v3.2",
+                appname="plane-spotting-intelligence-v3.4",
             )
             _db = _client[settings.database_name]
             await _client.admin.command("ping")
@@ -103,44 +85,16 @@ def get_db() -> AsyncIOMotorDatabase:
     return _db
 
 
-def users_col() -> AsyncIOMotorCollection:
-    return get_db()["users"]
-
-
-def locations_col() -> AsyncIOMotorCollection:
-    return get_db()["locations"]
-
-
-def preferences_col() -> AsyncIOMotorCollection:
-    return get_db()["preferences"]
-
-
-def notification_history_col() -> AsyncIOMotorCollection:
-    return get_db()["notification_history"]
-
-
-def user_state_col() -> AsyncIOMotorCollection:
-    return get_db()["user_state"]
-
-
-def provider_learning_col() -> AsyncIOMotorCollection:
-    return get_db()["provider_learning"]
-
-
-def ai_usage_col() -> AsyncIOMotorCollection:
-    return get_db()["ai_usage"]
-
-
-def feedback_col() -> AsyncIOMotorCollection:
-    return get_db()["feedback"]
-
-
-def camera_profiles_col() -> AsyncIOMotorCollection:
-    return get_db()["camera_profiles"]
-
-
-def system_status_col() -> AsyncIOMotorCollection:
-    return get_db()["system_status"]
+def users_col() -> AsyncIOMotorCollection: return get_db()["users"]
+def locations_col() -> AsyncIOMotorCollection: return get_db()["locations"]
+def preferences_col() -> AsyncIOMotorCollection: return get_db()["preferences"]
+def notification_history_col() -> AsyncIOMotorCollection: return get_db()["notification_history"]
+def user_state_col() -> AsyncIOMotorCollection: return get_db()["user_state"]
+def provider_learning_col() -> AsyncIOMotorCollection: return get_db()["provider_learning"]
+def ai_usage_col() -> AsyncIOMotorCollection: return get_db()["ai_usage"]
+def feedback_col() -> AsyncIOMotorCollection: return get_db()["feedback"]
+def camera_profiles_col() -> AsyncIOMotorCollection: return get_db()["camera_profiles"]
+def system_status_col() -> AsyncIOMotorCollection: return get_db()["system_status"]
 
 
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
@@ -150,13 +104,9 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["locations"].create_index("geohash")
     await db["preferences"].create_index("user_id", unique=True)
     await db["user_state"].create_index("user_id", unique=True)
-    await db["notification_history"].create_index(
-        [("user_id", 1), ("aircraft_icao24", 1), ("cooldown_until", 1)]
-    )
+    await db["notification_history"].create_index([("user_id", 1), ("aircraft_icao24", 1), ("cooldown_until", 1)])
     await db["notification_history"].create_index("cooldown_until", expireAfterSeconds=86400)
-    await db["provider_learning"].create_index(
-        [("user_id", 1), ("geohash", 1)], unique=True
-    )
+    await db["provider_learning"].create_index([("user_id", 1), ("geohash", 1)], unique=True)
     await db["provider_learning"].create_index("user_id")
     await db["ai_usage"].create_index([("model_name", 1), ("day", 1)], unique=True)
     await db["feedback"].create_index([("user_id", 1), ("notification_id", 1)])
@@ -164,5 +114,7 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["camera_profiles"].create_index("user_id", unique=True)
     await db["photo_alert_snapshots"].create_index([("user_id", 1), ("aircraft_icao24", 1)])
     await db["photo_alert_snapshots"].create_index("expires_at", expireAfterSeconds=0)
+    await db["approach_states"].create_index([("user_id", 1), ("aircraft_icao24", 1)], unique=True)
+    await db["approach_states"].create_index("expires_at", expireAfterSeconds=0)
     await db["system_status"].create_index("updated_at")
     logger.info("Database indexes ready.")
