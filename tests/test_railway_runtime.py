@@ -12,8 +12,11 @@ def _text(path: Path) -> str:
 def test_railway_requires_core_runtime_secrets_before_starting():
     text = _text(ENTRYPOINT)
     assert "RAILWAY_ENVIRONMENT" in text
-    assert "TELEGRAM_BOT_TOKEN MONGO_URI GEMINI_API_KEY" in text
+    for name in ("TELEGRAM_BOT_TOKEN", "MONGO_URI", "GEMINI_API_KEY"):
+        assert f'${{{name}:-}}' in text
+        assert f'missing="$missing {name}"' in text
     assert "exit 78" in text
+    assert "eval " not in text
 
 
 def test_railway_guard_does_not_echo_secret_values():
