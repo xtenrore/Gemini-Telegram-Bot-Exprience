@@ -6,12 +6,9 @@ set -eu
 # and disabled Telegram/Gemini because no runtime variables were present.
 if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
   missing=""
-  for name in TELEGRAM_BOT_TOKEN MONGO_URI GEMINI_API_KEY; do
-    eval "value=\${$name:-}"
-    if [ -z "$value" ]; then
-      missing="$missing $name"
-    fi
-  done
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || missing="$missing TELEGRAM_BOT_TOKEN"
+  [ -n "${MONGO_URI:-}" ] || missing="$missing MONGO_URI"
+  [ -n "${GEMINI_API_KEY:-}" ] || missing="$missing GEMINI_API_KEY"
 
   if [ -n "$missing" ]; then
     echo "FATAL: Railway runtime configuration is incomplete. Missing:$missing" >&2
