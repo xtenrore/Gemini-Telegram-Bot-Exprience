@@ -5,14 +5,35 @@ SERVICE="Gemini-Telegram-Bot-Exprience"
 ENVIRONMENT="production"
 PROJECT_ID="167a00b7-c56c-4cbb-9f24-3daded12443c"
 
-require_env() {
-  name="$1"
-  eval "value=\${$name:-}"
-  if [ -z "$value" ]; then
-    echo "Missing required environment variable: $name" >&2
+if [ -z "${RAILWAY_API_TOKEN:-}" ]; then
+  echo "Missing required environment variable: RAILWAY_API_TOKEN" >&2
+  exit 1
+fi
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  echo "Missing required environment variable: TELEGRAM_BOT_TOKEN" >&2
+  exit 1
+fi
+if [ -z "${MONGO_URI:-}" ]; then
+  echo "Missing required environment variable: MONGO_URI" >&2
+  exit 1
+fi
+
+link_service() {
+  railway link --project "$PROJECT_ID" --environment "$ENVIRONMENT" --service "$SERVICE" >/dev/null 2>&1
+}
+
+if ! link_service; then
+  RAILWAY_TOKEN="$RAILWAY_API_TOKEN"
+  export RAILWAY_TOKEN
+  unset RAILWAY_API_TOKEN
+  if ! link_service; then
+    echo "Railway authentication failed for both API-token and project-token modes." >&2
     exit 1
   fi
-}
+  echo "Railway project-token authentication accepted."
+else
+  echo "Railway API-token authentication accepted."
+fi
 
 set_secret() {
   key="$1"
@@ -29,11 +50,6 @@ set_optional_secret() {
   fi
 }
 
-require_env RAILWAY_API_TOKEN
-require_env TELEGRAM_BOT_TOKEN
-require_env MONGO_URI
-
-railway link --project "$PROJECT_ID" --environment "$ENVIRONMENT" --service "$SERVICE" >/dev/null
 set_secret TELEGRAM_BOT_TOKEN "$TELEGRAM_BOT_TOKEN"
 set_secret MONGO_URI "$MONGO_URI"
 set_optional_secret GEMINI_API_KEY "${GEMINI_API_KEY:-}"
