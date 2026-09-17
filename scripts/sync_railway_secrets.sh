@@ -3,7 +3,6 @@ set -eu
 
 SERVICE="Gemini-Telegram-Bot-Exprience"
 ENVIRONMENT="production"
-PROJECT_ID="167a00b7-c56c-4cbb-9f24-3daded12443c"
 
 if [ -z "${RAILWAY_API_TOKEN:-}" ]; then
   echo "Missing required environment variable: RAILWAY_API_TOKEN" >&2
@@ -18,22 +17,12 @@ if [ -z "${MONGO_URI:-}" ]; then
   exit 1
 fi
 
-link_service() {
-  railway link --project "$PROJECT_ID" --environment "$ENVIRONMENT" --service "$SERVICE" >/dev/null 2>&1
-}
-
-if ! link_service; then
-  RAILWAY_TOKEN="$RAILWAY_API_TOKEN"
-  export RAILWAY_TOKEN
-  unset RAILWAY_API_TOKEN
-  if ! link_service; then
-    echo "Railway authentication failed for both API-token and project-token modes." >&2
-    exit 1
-  fi
-  echo "Railway project-token authentication accepted."
-else
-  echo "Railway API-token authentication accepted."
-fi
+# The token created under Project Settings -> Tokens is a Railway project token.
+# Railway requires project tokens in RAILWAY_TOKEN and the token itself identifies
+# the project/environment, so `railway link` must not be used in CI.
+RAILWAY_TOKEN="$RAILWAY_API_TOKEN"
+export RAILWAY_TOKEN
+unset RAILWAY_API_TOKEN
 
 set_secret() {
   key="$1"
@@ -59,4 +48,4 @@ set_optional_secret ADMIN_PASSWORD "${ADMIN_PASSWORD:-}"
 set_optional_secret ADMIN_TELEGRAM_ID "${ADMIN_TELEGRAM_ID:-}"
 set_secret DATABASE_NAME "aircraft_bot"
 
-echo "Railway secret sync complete. Secret values were not printed."
+echo "Railway project-token sync complete. Secret values were not printed."
