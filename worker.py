@@ -1,8 +1,7 @@
-"""Standalone background worker entry-point.
+"""Plane? v3.5 standalone background worker entry-point.
 
-Runs the ADS-B monitor and, when configured for polling mode, the Telegram bot
-in the same persistent process. This avoids trying to keep Telegram long
-polling alive inside a Vercel serverless function.
+Runs the shared adaptive ADS-B monitor and, when configured for polling mode,
+the Telegram bot in the same persistent process.
 """
 
 from __future__ import annotations
@@ -22,7 +21,8 @@ from app.bot.handlers import register_handlers
 from app.config import settings
 from app.database import close_db, connect_db
 from app.photography.telegram import register_photography_handlers
-from app.worker.monitor import init_services, run_monitor_cycle
+from app.worker.monitor import init_services
+from app.worker.v35 import run_monitor_cycle_v35 as run_monitor_cycle
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +87,9 @@ async def main() -> None:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     )
-    logger.info("Aircraft Monitor Worker starting ...")
-    logger.info("Poll interval: %d seconds", settings.poll_interval_seconds)
+    logger.info("Plane? v3.5 Aircraft Monitor Worker starting ...")
+    logger.info("Base scheduler interval: %d seconds", settings.poll_interval_seconds)
+    logger.info("Adaptive polling: discovery=15s, hot-pass=5s, shared across nearby users")
     logger.info("Cooldown: %d minutes", settings.cooldown_minutes)
     logger.info("Default radius: %.0f km", settings.default_radius_km)
 
@@ -121,7 +122,7 @@ async def main() -> None:
         coalesce=True,
     )
     scheduler.start()
-    logger.info("Scheduler started -- monitoring every %ds", settings.poll_interval_seconds)
+    logger.info("Scheduler started -- v3.5 monitor tick every %ds", settings.poll_interval_seconds)
 
     logger.info("Running initial monitor cycle ...")
     await run_monitor_cycle()
