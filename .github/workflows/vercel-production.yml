@@ -1,26 +1,22 @@
-name: Vercel production bootstrap
+name: Railway production secret sync
 
 on:
   push:
     branches:
-      - main
       - chatgpt/vercel-production
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: plane-vercel-production
-  cancel-in-progress: true
 
 jobs:
-  bootstrap:
+  sync:
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    container: ghcr.io/railwayapp/cli:latest
+
     env:
-      VERCEL_BASE_URL: https://plane-telegram-bot.vercel.app
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       MONGO_URI: ${{ secrets.MONGO_URI }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -28,100 +24,12 @@ jobs:
       OPENSKY_CREDENTIALS_JSON: ${{ secrets.OPENSKY_CREDENTIALS_JSON }}
       ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
       ADMIN_TELEGRAM_ID: ${{ secrets.ADMIN_TELEGRAM_ID }}
+
     steps:
-      - name: Validate required secret presence
-        shell: bash
+      - uses: actions/checkout@v4
+
+      - name: Sync GitHub secrets to Railway
+        shell: sh
         run: |
-          set -euo pipefail
-          test -n "$TELEGRAM_BOT_TOKEN" || { echo "TELEGRAM_BOT_TOKEN is missing"; exit 1; }
-          test -n "$MONGO_URI" || { echo "MONGO_URI is missing"; exit 1; }
-          test -n "$GEMINI_API_KEY" || { echo "GEMINI_API_KEY is missing"; exit 1; }
-
-      - name: Bootstrap encrypted durable runtime and verify all providers
-        shell: python
-        run: |
-          import json
-          import os
-          import sys
-          import time
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-
-          audience = "plane-bot-vercel-bootstrap"
-          oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
-          separator = "&" if "?" in oidc_url else "?"
-          oidc_url += separator + urllib.parse.urlencode({"audience": audience})
-          oidc_req = urllib.request.Request(
-              oidc_url,
-              headers={"Authorization": f"bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
-          )
-          with urllib.request.urlopen(oidc_req, timeout=15) as response:
-              oidc = json.load(response)["value"]
-
-          admin_id_raw = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
-          config = {
-              "telegram_bot_token": os.environ["TELEGRAM_BOT_TOKEN"],
-              "mongo_uri": os.environ["MONGO_URI"],
-              "gemini_api_key": os.environ["GEMINI_API_KEY"],
-              "generation": os.environ["GITHUB_SHA"],
-              "database_name": "aircraft_bot",
-              "groq_api_key": os.environ.get("GROQ_API_KEY", ""),
-              "opensky_credentials_json": os.environ.get("OPENSKY_CREDENTIALS_JSON", ""),
-              "admin_password": os.environ.get("ADMIN_PASSWORD", ""),
-              "admin_telegram_id": int(admin_id_raw) if admin_id_raw else None,
-          }
-          body = json.dumps(config, separators=(",", ":")).encode()
-          headers = {
-              "Authorization": f"Bearer {oidc}",
-              "Content-Type": "application/json",
-          }
-          if os.environ.get("GITHUB_REF") != "refs/heads/main":
-              headers["X-Plane-Preview"] = "1"
-
-          base = os.environ["VERCEL_BASE_URL"].rstrip("/")
-
-          def post(path):
-              request = urllib.request.Request(base + path, data=body, headers=headers, method="POST")
-              try:
-                  with urllib.request.urlopen(request, timeout=60) as response:
-                      return response.status, json.load(response)
-              except urllib.error.HTTPError as exc:
-                  # Do not echo response bodies: they may contain implementation details.
-                  return exc.code, {"error": f"HTTP {exc.code}"}
-
-          status, result = post("/bootstrap")
-          if status != 200 or not result.get("ok"):
-              print(f"Bootstrap failed safely: HTTP {status}")
-              sys.exit(1)
-          print(f"Bootstrap accepted for generation {os.environ['GITHUB_SHA'][:12]}")
-
-          last = {}
-          for attempt in range(1, 31):
-              time.sleep(4 if attempt < 10 else 6)
-              status, last = post("/verify")
-              if status == 200 and last.get("ready"):
-                  safe = {
-                      "ready": bool(last.get("ready")),
-                      "mongodb": bool(last.get("mongodb")),
-                      "monitor": bool(last.get("monitor")),
-                      "telegram": bool(last.get("telegram")),
-                      "telegram_runtime": bool(last.get("telegram_runtime")),
-                      "webhook": bool(last.get("webhook")),
-                      "gemini": bool(last.get("gemini")),
-                      "bot_username": last.get("bot_username", ""),
-                  }
-                  print("Production verification:", json.dumps(safe, sort_keys=True))
-                  if safe["bot_username"] != "planebotnotifierbot":
-                      print("Unexpected Telegram bot identity")
-                      sys.exit(1)
-                  sys.exit(0)
-              print(f"Verification attempt {attempt}/30 not ready yet (HTTP {status})")
-
-          safe = {
-              key: last.get(key)
-              for key in ("ready", "mongodb", "monitor", "telegram", "telegram_runtime", "webhook", "gemini", "bot_username")
-              if key in last
-          }
-          print("Runtime did not become ready:", json.dumps(safe, sort_keys=True))
-          sys.exit(1)
+          chmod +x scripts/sync_railway_secrets.sh
+          ./scripts/sync_railway_secrets.sh
