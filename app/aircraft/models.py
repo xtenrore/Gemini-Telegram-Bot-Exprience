@@ -1,6 +1,6 @@
 """Pydantic models for normalised aircraft data."""
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class NormalizedAircraft(BaseModel):
     """Unified aircraft representation regardless of data source."""
@@ -16,8 +16,15 @@ class NormalizedAircraft(BaseModel):
     vertical_rate_mps: float | None = None
     position_age_s: float | None = None
     data_quality: str = "unknown"
-    aircraft_type: str = ""
+    aircraft_type: str = "UNKNOWN"
     timestamp: int | float | None = None
+
+    @field_validator("aircraft_type", mode="before")
+    @classmethod
+    def _normalise_aircraft_type(cls, value):
+        """Keep missing provider type data matchable in All Aircraft mode."""
+        text = str(value or "").strip()
+        return text or "UNKNOWN"
 
     @property
     def has_position(self)->bool:return self.latitude is not None and self.longitude is not None
