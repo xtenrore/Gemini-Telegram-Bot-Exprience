@@ -109,11 +109,28 @@ def _shutter_for_motion(angular_deg_s: float | None,focal_mm: float,geom: Camera
     if mode=="Prop blur":return 250,320
     if mode=="Night aircraft":return 800,1250
     if mode in {"Silhouette","Contrail shot"}:return 1000,1600
-    if angular_deg_s is None:floor=1250
+    if angular_deg_s is None:floor=1000
     else:
+        # Aircraft photography normally includes active panning.  A 2-pixel
+        # no-pan blur target was far too aggressive and routinely produced
+        # pointless 1/3200-1/4000 suggestions.  A 5-pixel panning allowance is
+        # much closer to practical handheld aviation shooting.
         h_pixels=math.sqrt((geom.megapixels or 24.0)*1_000_000*3/2); hfov=math.degrees(2*math.atan(geom.sensor_width_mm/(2*focal_mm))); deg_per_px=max(hfov/h_pixels,1e-6)
-        floor=int(max(640,min(4000,_standard_shutter(angular_deg_s/(2.0*deg_per_px)))))
+        floor=int(max(640,min(2500,_standard_shutter(angular_deg_s/(5.0*deg_per_px)))))
     return floor,_standard_shutter(floor*(1.25 if mode=="Maximum detail" else 1.0))
+
+
+def _practical_standard_shutter(floor:int,preferred:int,closest:ProjectedPoint|None,mode:str)->tuple[int,int]:
+    """Keep Standard aviation speeds practical for panned aircraft shots."""
+    if mode!="Standard aviation": return floor,preferred
+    altitude_m=abs(float(closest.altitude_m)) if closest and closest.altitude_m is not None else None
+    if altitude_m is not None and altitude_m<=3000:
+        # Low aircraft are large in frame; smooth panning at 1/1000 is a much
+        # better default than forcing ISO up with 1/3200-1/4000.
+        return min(max(floor,800),1000),1000
+    if altitude_m is not None and altitude_m<=6000:
+        return min(max(floor,800),1250),min(max(preferred,1000),1600)
+    return min(max(floor,800),1600),min(max(preferred,1000),2000)
 
 
 def _window_score(fill: float | None,point: ProjectedPoint,angular: float | None,light_quality: float,haze_penalty: float)->float:
@@ -129,7 +146,7 @@ def recommend_camera(*,camera: Any,lens: Any|None,aircraft_type: str,prediction:
         raw=focal_for_fill(geom.sensor_width_mm,closest.slant_km,wingspan,target); reco_focal=int(round(max(lens_min,min(lens_max,raw))/10)*10)
         est=frame_occupancy(geom.sensor_width_mm,geom.sensor_height_mm,reco_focal,closest.slant_km,wingspan,length); fill,clipping=est.frame_width_pct,est.clipping_risk
     cpa_idx=prediction.path.index(closest) if closest and prediction.path else 0; next_p=prediction.path[cpa_idx+1] if prediction.path and cpa_idx+1<len(prediction.path) else None
-    angular=angular_speed_deg_s(observer_lat,observer_lon,closest,next_p) if closest else None; floor,preferred=_shutter_for_motion(angular,max(reco_focal,lens_min),geom,mode)
+    angular=angular_speed_deg_s(observer_lat,observer_lon,closest,next_p) if closest else None; floor,preferred=_shutter_for_motion(angular,max(reco_focal,lens_min),geom,mode); floor,preferred=_practical_standard_shutter(floor,preferred,closest,mode)
     low_light=sun_elevation_deg is not None and sun_elevation_deg<8; aperture="f/6.3" if low_light else "f/8" if mode in {"Maximum detail","Contrail shot"} else "f/7.1"
     if mode=="Night aircraft":aperture="widest practical aperture"
     iso=f"Auto ISO ≤{max_auto_iso}"; ev="+0.7 EV" if "back" in light_relationship.lower() else "+0.3 EV" if low_light else "0 EV"
@@ -150,5 +167,6 @@ def recommend_camera(*,camera: Any,lens: Any|None,aircraft_type: str,prediction:
             center=max(usable,key=lambda r:r[0])[1].seconds; around=[r for r in usable if abs(r[1].seconds-center)<=24]; start_s=min(r[1].seconds for r in around); end_s=max(r[1].seconds for r in around)
     notes=[]
     if wingspan is None:notes.append("Exact aircraft dimensions unavailable; framing estimate is conservative.")
+    if mode=="Standard aviation" and closest and closest.altitude_m is not None and abs(float(closest.altitude_m))<=3000:notes.append("Low-altitude default favors ~1/1000 with smooth panning instead of unnecessarily high shutter speeds.")
     if heat_haze_level in {"High","Severe"}:notes.append("Atmospheric shimmer may erase detail before the lens reaches its maximum focal length.")
     return CameraRecommendation(mode,f"1/{preferred}",f"1/{floor}",aperture,iso,ev,f"~{reco_focal} mm",(max(lens_min,reco_focal-70),min(lens_max,reco_focal+70)),round(fill,1) if fill is not None else None,clipping,"Continuous/Servo AF + aircraft/subject tracking","High-speed continuous burst","Lens/IBIS on for viewfinder stability; do not rely on it to freeze subject motion",round(angular,2) if angular is not None else None,start_s,end_s,dynamic[:8],notes)
