@@ -66,3 +66,31 @@ def test_known_landing_before_cpa_vetoes_even_without_history():
     assert result.suppress_alert
     assert result.expected_turn_pending
     assert result.destination_code == "IST"
+
+
+def test_yesterdays_matching_route_is_enough_to_veto_expected_turn_false_positive():
+    historic = [path(-0.25)]
+    result = evaluate_route_gate(
+        callsign="THY1017",
+        current_path=historic[0][:4],
+        historical_paths=historic,
+        observer_lat=41.0,
+        observer_lon=29.0,
+        alert_radius_km=10.0,
+    )
+    assert result.suppress_alert
+    assert result.history_days == 1
+    assert result.similar_days == 1
+
+
+def test_today_diverging_from_yesterdays_route_is_suppressed():
+    result = evaluate_route_gate(
+        callsign="THY1017",
+        current_path=path(0.25)[:4],
+        historical_paths=[path()],
+        observer_lat=41.0,
+        observer_lon=29.0,
+        alert_radius_km=10.0,
+    )
+    assert result.suppress_alert
+    assert "diverges" in result.reason
