@@ -9,9 +9,9 @@ import re
 # Users select one or more categories; matching expands to these codes.
 
 AIRCRAFT_CATEGORIES: dict[str, list[str]] = {
-    # Sentinel category. The monitor recognises this category name and bypasses
-    # aircraft-type filtering so even aircraft with an unknown/missing type can
-    # still be evaluated by the deterministic CPA/pass logic.
+    # Sentinel category. resolve_match_prefixes turns ALL into an empty prefix,
+    # which matches every normalised aircraft type while the existing monitor
+    # still applies deterministic CPA/pass qualification and alert lifecycle.
     "All Aircraft": ["ALL"],
     "Military": [
         "C17",   # Globemaster III
@@ -190,15 +190,19 @@ def get_category_display(name: str) -> str:
 
 def resolve_match_prefixes(types: set[str]) -> set[str]:
     """Expands exact ICAO codes into family prefixes to catch all variants.
-    
-    E.g., if a user adds 'B738', this ensures it matches all 737 variants (B731-B739).
-    Military types like F16 also match F16A, F16C, F16CM etc.
+
+    The reserved sentinel ``ALL`` expands to the empty string. Python's
+    ``str.startswith('')`` is always true, so this reuses the existing monitor
+    matching path instead of bypassing any CPA/trajectory safety logic.
     """
     prefixes = set()
     for t in types:
         t = t.upper()
+        if t == "ALL":
+            prefixes.add("")
+            continue
         prefixes.add(t)  # Always add the exact code as a prefix
-        
+
         # Boeing families
         if t.startswith("B73"):
             prefixes.update(["B73", "B38M", "B39M", "B3XM"])
@@ -208,7 +212,7 @@ def resolve_match_prefixes(types: set[str]) -> set[str]:
             prefixes.update(["B77", "B77W", "B77L", "B77F", "B779"])
         elif t.startswith("B78"):
             prefixes.update(["B78", "B788", "B789", "B78X"])
-            
+
         # Airbus families
         elif t.startswith("A32") or t.startswith("A31"):
             prefixes.update(["A318", "A319", "A320", "A321", "A20N", "A21N"])
@@ -246,5 +250,5 @@ def resolve_match_prefixes(types: set[str]) -> set[str]:
         # Embraer regional
         elif t.startswith("E1") or t.startswith("E19"):
             prefixes.update(["E170", "E175", "E190", "E195", "E75L", "E75S"])
-            
+
     return prefixes
