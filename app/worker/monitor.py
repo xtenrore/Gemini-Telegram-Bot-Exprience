@@ -15,7 +15,7 @@ from app.aircraft.providers import ProviderManager
 from app.config import settings
 from app.database import get_db, locations_col, preferences_col, system_status_col, users_col
 from app.intelligence.camera import recommend_camera
-from app.intelligence.lifecycle import decide_lifecycle, prediction_changed
+from app.intelligence.lifecycle import decide_lifecycle, prediction_changed, should_cancel_active_alert
 from app.intelligence.celestial import positions as celestial_positions
 from app.intelligence.environment import detect_crossing, estimate_atmosphere, estimate_contrail, interpolate_flight_level
 from app.intelligence.trajectory import HistorySample, TrajectoryHistoryStore, predict_trajectory
@@ -189,10 +189,18 @@ async def _match_user_aircraft(user:dict,aircraft_list:list,results_by_provider:
             logger.info("approach_passed user=%s icao=%s observed_distance=%.2f",uid,ac.icao24,observed_closest)
             continue
         if not qualifies:
-            if old and old.get("message_id") and old.get("active"):
+            cancel_active=bool(old and old.get("message_id") and old.get("active") and should_cancel_active_alert(pred,(old or {}).get("projected_closest_km"),radius))
+            if cancel_active:
                 await send_or_update_approach(uid,ac,pred,"cancelled",old.get("notification_id","") or "",old.get("message_id"),previous_cpa_km=old.get("projected_closest_km"),observed_closest_km=observed_closest,prediction_changed=changed)
                 await states.update_one({"_id":old["_id"]},{"$set":{"active":False,"stage":"cancelled","updated_at":datetime.now(timezone.utc),"projected_closest_km":pred.projected_closest_km,"observed_closest_km":observed_closest}})
                 logger.info("approach_alert_cancelled user=%s icao=%s old_cpa=%s new_cpa=%.2f",uid,ac.icao24,old.get("projected_closest_km"),pred.projected_closest_km)
+            elif old and old.get("active"):
+                # Keep a previously-qualified approach alive through transient
+                # confidence/data-quality dips.  A 5.3 km -> 5.3 km prediction,
+                # for example, must never become a cancellation just because
+                # the confidence score briefly fell below the user threshold.
+                await states.update_one({"_id":old["_id"]},{"$set":{"updated_at":datetime.now(timezone.utc),"projected_closest_km":pred.projected_closest_km,"observed_closest_km":observed_closest,"time_to_cpa_s":pred.time_to_cpa_s,"confidence":pred.confidence}})
+                logger.debug("approach_alert_held user=%s icao=%s state=%s cpa=%.2f confidence=%s",uid,ac.icao24,pred.state,pred.projected_closest_km,pred.confidence)
             continue
         env=None; cam=await _camera(uid,ac,pred,user,spot,None)
         decision=decide_lifecycle(pred,cam.best_window_start_s if cam else None,cam.best_window_end_s if cam else None)
