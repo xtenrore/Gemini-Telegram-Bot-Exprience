@@ -34,44 +34,17 @@ def test_single_heading_spike_does_not_destroy_good_cpa():
 
 
 def test_uncertain_single_bad_prediction_is_not_cancellation_evidence():
-    pred = SimpleNamespace(
-        stale=False,
-        already_passed=False,
-        state="Will not approach",
-        enters_alert_radius=False,
-        projected_closest_km=28.0,
-        distance_trend_km_s=None,
-        turning_away=False,
-        confidence_score=0.2,
-    )
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Will not approach", enters_alert_radius=False, projected_closest_km=28.0, distance_trend_km_s=None, turning_away=False, confidence_score=0.2)
     assert should_cancel_active_alert(pred, 5.0, 15.0) is False
 
 
 def test_confident_clear_miss_can_invalidate_eta_before_distance_turns_outward():
-    pred = SimpleNamespace(
-        stale=False,
-        already_passed=False,
-        state="Will not approach",
-        enters_alert_radius=False,
-        projected_closest_km=19.0,
-        distance_trend_km_s=-0.03,
-        turning_away=False,
-        confidence_score=0.72,
-    )
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Will not approach", enters_alert_radius=False, projected_closest_km=19.0, distance_trend_km_s=-0.03, turning_away=False, confidence_score=0.72)
     assert should_cancel_active_alert(pred, 5.8, 8.0) is True
 
 
 def test_low_confidence_extreme_miss_can_retire_obsolete_eta_after_confirmation():
-    pred = SimpleNamespace(
-        stale=False,
-        already_passed=False,
-        state="Will not approach",
-        enters_alert_radius=False,
-        projected_closest_km=47.0,
-        distance_trend_km_s=-0.01,
-        turning_away=False,
-        confidence_score=0.42,
-    )
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Will not approach", enters_alert_radius=False, projected_closest_km=47.0, distance_trend_km_s=-0.01, turning_away=False, confidence_score=0.42)
     candidate = should_cancel_active_alert(pred, 6.9, 8.0)
     assert candidate is True
     confirmed, count = advance_cancellation_confirmation(0, candidate)
@@ -82,45 +55,23 @@ def test_low_confidence_extreme_miss_can_retire_obsolete_eta_after_confirmation(
     assert confirmed and count == 3
 
 
+def test_production_like_low_confidence_two_radius_miss_counts_as_evidence():
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Will not approach", enters_alert_radius=False, projected_closest_km=22.9, distance_trend_km_s=-0.01, turning_away=False, confidence_score=0.42)
+    assert should_cancel_active_alert(pred, 6.14, 10.0) is True
+
+
 def test_low_confidence_non_extreme_miss_still_holds_eta():
-    pred = SimpleNamespace(
-        stale=False,
-        already_passed=False,
-        state="Will not approach",
-        enters_alert_radius=False,
-        projected_closest_km=20.0,
-        distance_trend_km_s=-0.01,
-        turning_away=False,
-        confidence_score=0.42,
-    )
-    assert should_cancel_active_alert(pred, 6.9, 8.0) is False
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Will not approach", enters_alert_radius=False, projected_closest_km=17.5, distance_trend_km_s=-0.01, turning_away=False, confidence_score=0.42)
+    assert should_cancel_active_alert(pred, 6.9, 10.0) is False
 
 
 def test_small_miss_without_outward_motion_does_not_cancel_eta():
-    pred = SimpleNamespace(
-        stale=False,
-        already_passed=False,
-        state="Will not approach",
-        enters_alert_radius=False,
-        projected_closest_km=11.0,
-        distance_trend_km_s=-0.03,
-        turning_away=False,
-        confidence_score=0.8,
-    )
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Will not approach", enters_alert_radius=False, projected_closest_km=11.0, distance_trend_km_s=-0.03, turning_away=False, confidence_score=0.8)
     assert should_cancel_active_alert(pred, 5.8, 8.0) is False
 
 
 def test_cancellation_needs_three_consecutive_credible_cycles():
-    pred = SimpleNamespace(
-        stale=False,
-        already_passed=False,
-        state="Moving away",
-        enters_alert_radius=False,
-        projected_closest_km=25.0,
-        distance_trend_km_s=0.02,
-        turning_away=False,
-        confidence_score=0.7,
-    )
+    pred = SimpleNamespace(stale=False, already_passed=False, state="Moving away", enters_alert_radius=False, projected_closest_km=25.0, distance_trend_km_s=0.02, turning_away=False, confidence_score=0.7)
     candidate = should_cancel_active_alert(pred, 5.0, 15.0)
     assert candidate
     confirmed, count = advance_cancellation_confirmation(0, candidate)
