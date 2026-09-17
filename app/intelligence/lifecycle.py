@@ -81,14 +81,14 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
         and confidence_score >= 0.58
     )
 
-    # Production logs can contain a long run of fresh, internally consistent
-    # low/medium-confidence predictions after a turn.  Keeping the old ETA alive
-    # forever in that case is worse than acknowledging a very large deterministic
-    # miss.  The extreme-miss path is intentionally conservative: the new CPA has
-    # to be far outside the radius, materially worse than the stored qualifying
-    # CPA, at least Low confidence, and the caller still requires three consecutive
-    # cycles.  A single provider/heading spike therefore still cannot cancel.
-    extreme_miss_margin_km = max(15.0, radius * 1.50)
+    # Low-confidence predictions are deliberately not allowed to retire an ETA
+    # merely for crossing the ordinary clear-miss boundary. Production evidence
+    # showed, however, that a stable qualifying CPA could remain displayed while
+    # fresh deterministic predictions repeatedly moved to more than roughly two
+    # alert radii away. Treat that larger miss as credible evidence at Low+
+    # confidence; the caller still requires three consecutive cycles, preserving
+    # protection against one-off provider/heading spikes.
+    extreme_miss_margin_km = max(10.0, radius * 1.00)
     extreme_repeated_miss = (
         state == "Will not approach"
         and new_cpa >= radius + extreme_miss_margin_km
