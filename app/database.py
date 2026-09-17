@@ -116,5 +116,10 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["photo_alert_snapshots"].create_index("expires_at", expireAfterSeconds=0)
     await db["approach_states"].create_index([("user_id", 1), ("aircraft_icao24", 1)], unique=True)
     await db["approach_states"].create_index("expires_at", expireAfterSeconds=0)
+    # Historical routing is keyed by flight callsign + day. ICAO24/registration
+    # may be retained diagnostically but is intentionally not part of the key.
+    await db["flight_route_samples"].create_index([("callsign", 1), ("utc_date", 1)], unique=True)
+    await db["flight_route_samples"].create_index("expires_at", expireAfterSeconds=0)
+    await db["flight_route_samples"].create_index("updated_at")
     await db["system_status"].create_index("updated_at")
     logger.info("Database indexes ready.")
