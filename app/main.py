@@ -1,4 +1,4 @@
-"""Aircraft Alert Telegram Bot + v3.2 photography assistant + web server."""
+"""Plane? v3.4 aircraft spotting intelligence, Telegram bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +20,7 @@ from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
+from app.logging_security import configure_secure_logging
 from app.photography.telegram import register_photography_handlers
 from app.worker.monitor import get_cycle_stats, init_services, run_monitor_cycle
 
@@ -53,11 +54,8 @@ async def _monitor_loop() -> None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    )
-    logger.info("Initializing Aircraft Alert v3.2 (Telegram + Gemini Photography)...")
+    configure_secure_logging()
+    logger.info("Initializing Plane? v3.4 Spotting Intelligence (Telegram + deterministic photography core)...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
@@ -84,8 +82,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("OpenSky key manager: %d key(s) available.", key_count)
     await init_services()
 
-    # Back4app free containers are memory-constrained. Keep monitoring in the same
-    # Python process rather than launching a duplicate worker interpreter.
+    # Keep monitoring in the same Python process so the production service has a
+    # single bounded-memory runtime for the API, Telegram, and spotting worker.
     monitor_task = asyncio.create_task(_monitor_loop(), name="aircraft-monitor")
 
     bot_token = settings.telegram_bot_token.strip()
@@ -107,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         BotCommand("lens", "Set your aircraft lens"),
                         BotCommand("photo", "Get live best-shot camera settings"),
                         BotCommand("conditions", "Show weather / sun / haze conditions"),
+                        BotCommand("spotting", "Open Spotting Mode"),
                         BotCommand("help", "Show all commands"),
                     ]
                 )
@@ -134,7 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    logger.info("Shutting down Aircraft Alert v3.2...")
+    logger.info("Shutting down Plane? v3.4...")
     if telegram_app:
         try:
             if telegram_app.updater and telegram_app.updater.running:
@@ -161,9 +160,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="Aircraft Alert Telegram Bot",
-    description="Real-time ADS-B monitoring with Gemini-powered aviation photography guidance",
-    version="3.2.0",
+    title="Plane? Spotting Intelligence",
+    description="Deterministic real-time ADS-B spotting intelligence with optional Gemini enhancement",
+    version="3.4.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -219,14 +218,14 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "healthy" if db_ok else "degraded",
-        "version": "3.2.0",
-        "uptime_seconds": round(time.time() - _server_start_time, 1),
+        "version": "3.4.0",
         "database_connected": db_ok,
         "bot_mode": bot_status,
+        "uptime_seconds": round(time.time() - _server_start_time, 1),
         "worker": worker_info,
-        "photography": {
-            "gemini_enabled": bool(settings.gemini_api_key.strip()),
-            "model": settings.gemini_photo_model,
+        "spotting_intelligence": {
+            "deterministic_core": True,
+            "gemini_advisor_enabled": bool(settings.gemini_api_key.strip()),
             "weather_provider": "Open-Meteo",
         },
         "python_version": platform.python_version(),
@@ -271,6 +270,7 @@ async def telegram_webhook(request: Request) -> Response:
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("PORT", str(settings.port)))
     host = os.getenv("HOST", settings.host)
     uvicorn.run("app.main:app", host=host, port=port, reload=False)
