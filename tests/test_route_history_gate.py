@@ -1,4 +1,9 @@
-from app.intelligence.route_history import AirportInfo, evaluate_route_gate, normalize_flight_key, route_similarity_km
+from types import SimpleNamespace
+
+import pytest
+
+import app.intelligence.route_history as route_history
+from app.intelligence.route_history import AirportInfo, RouteHistoryService, evaluate_route_gate, normalize_flight_key, route_similarity_km
 
 
 def path(lon_offset=0.0):
@@ -94,3 +99,59 @@ def test_today_diverging_from_yesterdays_route_is_suppressed():
     )
     assert result.suppress_alert
     assert "diverges" in result.reason
+
+
+class FakeResponse:
+    def __init__(self, payload=None, *, json_error=False, status_code=200):
+        self.payload = payload
+        self.json_error = json_error
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        if self.json_error:
+            raise ValueError("not json")
+        return self.payload
+
+
+class FakeRouteClient:
+    def __init__(self):
+        self.single_called = False
+
+    async def post(self, *args, **kwargs):
+        return FakeResponse(json_error=True)
+
+    async def get(self, url, *args, **kwargs):
+        self.single_called = True
+        assert "/THY1017/" in url
+        return FakeResponse({
+            "callsign": "THY1017",
+            "airport_codes": "EGLL-LTFM",
+            "plausible": True,
+            "_airports": [
+                {"icao": "EGLL", "iata": "LHR", "name": "Heathrow", "lat": 51.4700, "lon": -0.4543},
+                {"icao": "LTFM", "iata": "IST", "name": "Istanbul Airport", "lat": 41.2753, "lon": 28.7519},
+            ],
+        })
+
+
+@pytest.mark.asyncio
+async def test_route_lookup_falls_back_to_single_endpoint_when_bulk_is_not_json(monkeypatch):
+    client = FakeRouteClient()
+
+    async def fake_get_http_client():
+        return client
+
+    monkeypatch.setattr(route_history, "get_http_client", fake_get_http_client)
+    service = RouteHistoryService()
+    ac = SimpleNamespace(callsign="THY1017", latitude=41.5, longitude=28.75)
+    resolved = await service.resolve_route(ac)
+
+    assert client.single_called
+    assert resolved is not None
+    assert resolved.plausible is True
+    assert resolved.destination is not None
+    assert resolved.destination.iata == "IST"
