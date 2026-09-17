@@ -29,7 +29,7 @@ class NormalizedAircraft(BaseModel):
     @property
     def has_position(self)->bool:return self.latitude is not None and self.longitude is not None
     @property
-    def display_type(self)->str:return self.aircraft_type or "Unknown"
+    def display_type(self)->str:return "Unknown" if self.aircraft_type == "UNKNOWN" else self.aircraft_type
     @property
     def ground_speed(self)->float|None:return None if self.velocity is None else self.velocity*1.9438444924406
     @property
