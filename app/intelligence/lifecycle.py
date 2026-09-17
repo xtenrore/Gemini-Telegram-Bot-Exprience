@@ -43,3 +43,28 @@ def prediction_changed(previous_cpa_km: float | None, new_cpa_km: float, alert_r
         return False
     delta = abs(float(new_cpa_km) - float(previous_cpa_km))
     return delta >= max(1.5, alert_radius_km * 0.20)
+
+
+def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_radius_km: float) -> bool:
+    """Return True only when an active approach has genuinely become invalid.
+
+    A transient confidence drop, stale ADS-B sample, or tiny CPA wobble must not
+    cancel an alert that still projects inside the user's radius.  Cancellation
+    requires a meaningful move outside a hysteresis band plus evidence that the
+    trajectory has actually changed/moved away.
+    """
+    if getattr(prediction, "stale", False):
+        return False
+    if getattr(prediction, "already_passed", False) or getattr(prediction, "state", "") == "Passed":
+        return False
+    if getattr(prediction, "enters_alert_radius", False):
+        return False
+
+    new_cpa = float(getattr(prediction, "projected_closest_km", alert_radius_km))
+    hysteresis_km = max(1.5, float(alert_radius_km) * 0.15)
+    if new_cpa <= float(alert_radius_km) + hysteresis_km:
+        return False
+
+    state = str(getattr(prediction, "state", ""))
+    decisive_state = state in {"Moving away", "Will not approach", "Turning away", "Trajectory changed"}
+    return decisive_state or prediction_changed(previous_cpa_km, new_cpa, alert_radius_km)
