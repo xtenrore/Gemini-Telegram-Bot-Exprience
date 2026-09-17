@@ -1,230 +1,126 @@
-# ✈️ Aircraft Alert Telegram Bot (Single-VM Linux Edition)
+# Plane?
 
-A high-performance Telegram bot and monitoring system that monitors ADS-B aircraft data in real-time and alerts users when aircraft types of interest pass near their location or enter a projected collision/intercept trajectory.
+**Real-time aircraft spotting alerts with trajectory-aware filtering.**
 
-Consolidated into a **single unified Linux VM deployment** with automated systemd background services.
+Plane? is a Telegram-based aircraft spotting system built around one simple rule: **an aircraft being nearby is not enough to alert**. It follows live ADS-B motion, estimates the aircraft's closest point of approach to a saved location, and only sends an approach alert when the projected pass actually makes sense.
 
----
+The current production version is **Plane? v3.5**. It runs on Railway as a single service containing the FastAPI API, Telegram bot, and background aircraft monitor.
 
-## 🌟 Key Features
+## What Plane? does
 
-- **Single-VM Architecture** — Both the FastAPI web server / Telegram bot and the 5-second background monitoring worker run on the same VM with zero cross-VM latency.
-- **Automated Linux Setup Script (`setup.sh`)** — Automatically installs system dependencies, Python 3, MongoDB 7.0, creates venv, sets up `.env`, registers systemd services, and launches them in the background.
-- **Service Management (`manage.sh`)** — Easy commands to start, stop, restart, view live logs, and run automated tests.
-- **Flexible Bot Operation (Polling or Webhook)**:
-  - **Long Polling (Default)**: Runs without requiring a public domain, SSL certificates, or open incoming ports.
-  - **HTTPS Webhook (Optional)**: Automatically activates if `WEBHOOK_URL` is set in `.env`.
-- **Web Admin Dashboard (`/admin`)** — Real-time metrics for active users, notifications sent, provider health, memory usage, and background worker cycle status.
-- **Multi-Source ADS-B Data Feeds (Parallel Query + Failover)**:
-  - [ADSB.lol](https://www.adsb.lol/) — High-speed community feed with ICAO aircraft types
-  - [ADSB.fi](https://www.adsb.fi/) — High-availability European feed
-  - [Airplanes.Live](https://airplanes.live/) — Global aggregated feed
-  - [ADSB.one](https://adsb.one/) — Low-latency community feed
-  - [OpenSky Network](https://opensky-network.org/) — Multi-key rotation backup
-- **Native 3D Kinematics & Trajectory Forecasting** — In-process physics engine calculating turn rates, Closest Distance of Approach (CDA), and ETA over an extended +15km outer early-warning buffer.
-- **Smart Anti-Spam** — 30-minute configurable cooldown per aircraft per user.
-- **Category & Custom Filtering** — Military, Large Airliners, Cargo, Business Jets, Helicopters, Government, VIP, and custom ICAO type codes (e.g. `B738`, `A21N`, `C17`).
+- Tracks live aircraft around saved user locations using several ADS-B sources, with provider rotation and fallback when a feed is unavailable.
+- Uses deterministic trajectory calculations for distance, approach state, closest point of approach, time to closest approach, turn behavior, and prediction confidence.
+- Keeps short, bounded trajectory history so a single noisy ADS-B sample does not create a false alert.
+- Uses recent flight-number route history as a second veto layer. For supported flights, Plane? can compare today's path with the previous three UTC days and suppress alerts when the normal route turns away or reaches its destination before the projected pass.
+- Shares ADS-B polling between nearby users instead of making a separate provider request for every user. Quiet regions are polled less often; active regions automatically move to a faster update cycle.
+- Supports aircraft-category filters, custom ICAO type codes, and an all-aircraft monitoring mode.
+- Includes a spotting and photography system with camera/lens profiles, sun position, weather, haze, upper-air conditions, framing estimates, shutter guidance, and contrail-related information.
+- Exposes health, statistics, and admin endpoints for deployment monitoring.
 
----
+## Alert logic
 
-## 🏗️ Architecture
+Plane? does not treat current distance, destination airport, or heading alone as proof that an aircraft is coming toward the observer. The monitor builds recent motion history, projects the path, calculates the closest pass, checks whether the prediction is stable enough to trust, and then applies route-history checks when useful.
 
-```
-                               ┌────────────────────────────────────────────────────────┐
-                               │                    Single Linux VM                     │
-                               │                                                        │
-Telegram Servers               │   ┌────────────────────────────────────────────────┐   │
-   │                           │   │  aircraft-bot.service (FastAPI + Telegram)     │   │
-   ├─ (HTTPS Webhook) ─────────┼─► │    • GET  /            -> HTTP 200 OK          │   │
-   │                           │   │    • GET  /health      -> Health status JSON   │   │
-   └─ (or Long Polling) ◄──────┼─► │    • GET  /stats       -> System statistics    │   │
-                               │   │    • POST /webhook     -> Webhook updates      │   │
-                               │   │    • GET  /admin       -> Web Admin Dashboard  │   │
-                               │   └────────────────────────┬───────────────────────┘   │
-                               │                            │                           │
-                               │                            ▼                           │
-                               │                   ┌─────────────────┐                  │
-                               │                   │  MongoDB 7.0    │                  │
-                               │                   └────────┬────────┘                  │
-                               │                            ▲                           │
-ADS-B Providers                │                            │                           │
-(ADSB.lol, ADSB.fi,            │   ┌────────────────────────┴───────────────────────┐   │
- Airplanes.Live, ADSB.one) ────┼─► │  aircraft-worker.service (Trajectory Monitor)  │   │
-                               │   │    • 5-second polling cycle                    │   │
-                               │   │    • Native kinematics & early warning         │   │
-                               │   │    • Notifications via Telegram Bot API        │   │
-                               │   └────────────────────────────────────────────────┘   │
-                               └────────────────────────────────────────────────────────┘
-```
+If an aircraft turns away or the prediction changes enough that the pass no longer qualifies, the active approach state is cancelled instead of continuing to count down to a pass that will never happen.
 
----
+The core trajectory and photography calculations are deterministic. Gemini is optional and is used only for explanation or enhancement; the alert engine does not depend on it to decide basic geometry, ETA, sun position, camera fundamentals, or whether a pass qualifies.
 
-## 🚀 Quick Start (Automated Linux Setup)
+## v3.5 shared polling
 
-Run this on any Linux server (Ubuntu 24.04 / 22.04 / 20.04, Debian 12 / 11, Oracle Cloud, DigitalOcean, Hetzner, AWS, etc.):
+Version 3.5 changed how ADS-B traffic is fetched. Nearby users are grouped into safe shared query regions and reuse the same aircraft snapshot. Public providers are rotated instead of all being queried on every cycle, OpenSky is kept as a fallback, and cached snapshots are briefly reused when a feed returns a transient empty result.
+
+The main scheduler still runs every five seconds, but provider traffic is adaptive: active regions can refresh every five seconds while quiet discovery regions use a slower interval. This keeps alert latency low without making API usage grow linearly with the number of users.
+
+## Telegram commands
+
+| Command | Purpose |
+| --- | --- |
+| `/start` | Set up Plane? and aircraft alerts |
+| `/status` | Show the current monitoring setup |
+| `/location` | Set the monitoring / shooting location |
+| `/preferences` | Choose aircraft types and alert preferences |
+| `/camera` | Set the camera body |
+| `/lens` | Set the aircraft lens |
+| `/photo` | Get current shooting guidance |
+| `/conditions` | Show weather, sun and atmospheric conditions |
+| `/spotting` | Open Spotting Mode |
+| `/help` | Show command help |
+
+## Running locally
+
+Plane? uses Python 3.11 and MongoDB. Copy the example environment file first and fill in the services you want to use.
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/xtenrore/Gemini-Telegram-Bot-Exprience.git
 cd Gemini-Telegram-Bot-Exprience
 
-# 2. Run the automated Linux setup script (as root or with sudo)
-sudo bash setup.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-The script automatically:
-1. Installs system packages, Python 3, and build tools.
-2. Installs and starts MongoDB Community Edition.
-3. Sets up Python virtual environment (`venv/`) and dependencies.
-4. Generates `.env` from `.env.example` and prompts for your Telegram Bot Token.
-5. Installs `aircraft-bot.service`, `aircraft-worker.service`, and `aircraft.target`.
-6. Enables and immediately starts both background services via `systemctl`.
-7. Tests local endpoints and displays service health.
+The minimum practical setup is a Telegram bot token and a MongoDB connection. ADS-B provider URLs already have defaults in `.env.example`. Gemini and Groq are optional enhancement/fallback integrations.
 
----
+| Variable | Used for |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot runtime |
+| `MONGO_URI` | MongoDB / MongoDB Atlas connection |
+| `DATABASE_NAME` | Database name |
+| `WEBHOOK_URL` | Optional Telegram webhook mode |
+| `WEBHOOK_SECRET` | Optional webhook verification |
+| `GEMINI_API_KEY` | Optional AI enhancement |
+| `OPENSKY_1` ... `OPENSKY_5` | Optional OpenSky OAuth credentials |
+| `POLL_INTERVAL_SECONDS` | Base monitor loop interval |
+| `DEFAULT_RADIUS_KM` | Default user alert radius |
 
-## 🛠️ Service Management
+See [`.env.example`](.env.example) for the full configuration.
 
-Use the included `./manage.sh` helper script:
+## Production deployment
 
-```bash
-# Check status of bot, worker, MongoDB, and health endpoint
-./manage.sh status
+Production is containerized with the root [`Dockerfile`](Dockerfile) and deployed to Railway. The container starts through [`scripts/railway-entrypoint.sh`](scripts/railway-entrypoint.sh), which verifies the production integrations before launching the service.
 
-# Restart both background services
-./manage.sh restart
+Changes on `main` are tested by GitHub Actions. A successful test workflow can then trigger the Railway deployment workflow so the exact tested commit is what gets deployed.
 
-# Stop background services
-./manage.sh stop
+The Railway production process uses one Python runtime for FastAPI, Telegram, and the integrated ADS-B monitor. The older VM/systemd deployment files remain in the repository for self-hosted setups, but they are not the primary production path.
 
-# Start background services
-./manage.sh start
+## HTTP endpoints
 
-# Stream live combined logs from journalctl
-./manage.sh logs
+| Endpoint | Purpose |
+| --- | --- |
+| `/` | Lightweight deployment health check |
+| `/health` | Database, bot and worker health information |
+| `/stats` | User and shared-polling statistics |
+| `/admin` | Admin dashboard |
+| `/webhook` | Telegram webhook receiver when webhook mode is enabled |
 
-# Stream individual service logs
-./manage.sh logs-bot
-./manage.sh logs-worker
+## Project layout
 
-# Run automated test suite
-./manage.sh test
+```text
+app/
+  aircraft/       ADS-B providers, normalization and provider intelligence
+  bot/            Telegram commands, callbacks and messages
+  intelligence/   trajectory, route-history, camera and environment logic
+  photography/    photography conditions and Telegram spotting tools
+  worker/         monitoring, matching, reliability and v3.5 shared polling
+  admin/          admin API and dashboard
+
+.github/workflows/ CI, Railway deploy and secret-sync workflows
+docs/              focused technical notes
+scripts/           Railway/runtime verification helpers
+tests/             trajectory, alert, provider, photography and runtime tests
 ```
 
-Standard `systemctl` commands are also fully supported:
-```bash
-sudo systemctl status aircraft-bot aircraft-worker
-sudo systemctl restart aircraft.target
-```
+## Design principle
 
----
+**Deterministic code decides what is physically happening. AI only explains or enhances the result.**
 
-## ⚙️ Configuration (`.env`)
+That means a Gemini outage, timeout, or quota limit should not stop Plane? from deciding whether an aircraft is approaching, calculating the pass geometry, or producing usable spotting guidance.
 
-All settings are configured in `.env`. Copy from `.env.example`:
+## Notes
 
-| Variable | Default | Description |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Required | Telegram bot token from [@BotFather](https://t.me/BotFather) |
-| `WEBHOOK_URL` | *blank* | Public URL for webhooks. **Leave empty to use Long Polling** |
-| `WEBHOOK_SECRET` | *blank* | Optional secret token for Telegram webhook validation |
-| `MONGO_URI` | `mongodb://localhost:27017` | Local or remote MongoDB connection URI |
-| `DATABASE_NAME` | `aircraft_bot` | MongoDB database name |
-| `POLL_INTERVAL_SECONDS` | `5` | ADS-B query interval in seconds |
-| `DEFAULT_RADIUS_KM` | `15.0` | Default user detection radius in km |
-| `COOLDOWN_MINUTES` | `30` | Minutes to suppress repeat alerts for same aircraft |
-| `ADMIN_PASSWORD` | *blank* | Optional password protecting `/admin` dashboard |
-| `ADMIN_TELEGRAM_ID` | *blank* | Optional Telegram ID for admin notifications |
-| `GEMINI_API_KEY` | *blank* | Optional Gemini API key for AI judge and conflict resolution |
-| `GROQ_API_KEY` | *blank* | Optional Groq API key for AI verification cascade |
+ADS-B data can be delayed, incomplete, duplicated, or briefly incorrect depending on the upstream feed and receiver coverage. Plane? uses confidence checks, stale-data rejection, bounded history, multiple providers, and route validation to reduce those problems, but live aviation data should still be treated as observational rather than authoritative.
 
----
-
-## 📊 HTTP Endpoints & Admin Dashboard
-
-The FastAPI web service exposes the following endpoints (default port `8000`):
-
-- **`GET /`** — Plain text `"OK"` for deployment health checks and UptimeRobot.
-- **`GET /health`** — JSON status checking MongoDB connectivity, Telegram bot mode, and worker cycle statistics.
-- **`GET /stats`** — JSON overview of active users, total users, and polling configuration.
-- **`GET /admin`** — Interactive Admin Dashboard with live stats, provider metrics, and user management.
-- **`GET /admin/api/*`** — Dashboard JSON APIs (`/overview`, `/users`, `/providers`, `/keys`, `/notifications`, `/system`).
-- **`POST /webhook`** — Telegram update receiver (active when `WEBHOOK_URL` is set).
-
----
-
-## 🤖 Telegram Bot Commands
-
-| Command | Description |
-|---|---|
-| `/start` | Welcome message, disclaimer acceptance, and initial setup |
-| `/setup` | Reset preferences and run full setup flow again |
-| `/status` | View current location, radius, and watched aircraft types |
-| `/location` | Update your monitoring GPS coordinates and radius |
-| `/preferences` | Change watched aircraft categories and custom ICAO codes |
-| `/help` | Show command reference and usage help |
-| `/cancel` | Cancel current interactive input step |
-
----
-
-## 📁 Project Structure
-
-```
-.
-├── app/
-│   ├── admin/                 # Admin dashboard routes & static frontend
-│   │   ├── static/            # HTML5 dashboard, CSS styling, and JavaScript logic
-│   │   └── routes.py          # Dashboard API routes (/admin/api/*)
-│   ├── aircraft/              # Aircraft providers, models, AI judge, & learning
-│   │   ├── api_keys.py        # OpenSky OAuth2 token management & key rotation
-│   │   ├── ai_judge.py        # Gemini + Groq AI cascade verification
-│   │   ├── categories.py      # Aircraft type categories and prefix matchers
-│   │   ├── learner.py         # Per-user provider selection & observation engine
-│   │   ├── models.py          # NormalizedAircraft unified schema
-│   │   └── providers.py       # ADS-B multi-provider fetchers (parallel query)
-│   ├── bot/                   # Telegram bot UI & interactions
-│   │   ├── feedback.py        # Like/dislike notification feedback handlers
-│   │   ├── handlers.py        # Command and callback query handlers
-│   │   ├── keyboards.py       # Inline keyboard builders
-│   │   ├── messages.py        # HTML message templates
-│   │   └── states.py          # FSM conversation states
-│   ├── worker/                # Monitoring & trajectory engine
-│   │   ├── geo.py             # Haversine distance, bounding boxes, geohash
-│   │   ├── kinematics.py      # Trajectory simulation, curve projection, CDA & ETA
-│   │   ├── monitor.py         # Main ADS-B polling and matching loop
-│   │   └── notifications.py   # Telegram notification sender with rate limiter
-│   ├── config.py              # Application settings (Pydantic BaseSettings)
-│   ├── database.py            # Motor MongoDB async client & index management
-│   └── main.py                # FastAPI web server, admin dashboard, & bot runner
-├── deploy/
-│   ├── aircraft-bot.service   # Systemd unit template for web/bot service
-│   ├── aircraft-worker.service# Systemd unit template for background monitor
-│   ├── aircraft.target        # Systemd target unit for managing both services
-│   ├── Caddyfile              # Optional reverse proxy configuration
-│   └── setup.sh               # Deployment setup wrapper
-├── api/                       # OpenSky API key credentials
-├── manage.sh                  # Management CLI (status, start, stop, restart, logs, test)
-├── setup.sh                   # Automated single-VM Linux installer
-├── worker.py                  # Standalone background worker runner
-├── requirements.txt           # Python dependencies
-├── .env.example               # Environment template
-└── Procfile                   # Process definition
-```
-
----
-
-## 🧪 Testing
-
-Run the automated test suite:
-
-```bash
-./manage.sh test
-# or
-./venv/bin/pytest -v
-```
-
----
-
-## 📄 License
-
-MIT License.
+More detail on the route-history gate is available in [`docs/FLIGHT_ROUTE_HISTORY.md`](docs/FLIGHT_ROUTE_HISTORY.md). Photography-specific notes are in [`docs/V3.2_PHOTOGRAPHY.md`](docs/V3.2_PHOTOGRAPHY.md).
