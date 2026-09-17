@@ -1,8 +1,9 @@
 """AI-assisted aircraft verification using Gemini with optional Groq fallback.
 
 The AI layer is deliberately non-critical: monitoring continues when every AI
-provider is unavailable. Models are configured through environment variables so
-retired model IDs can be changed without code changes.
+provider is unavailable. Models and credentials are configured through
+environment variables so retired model IDs or exhausted keys can fail over
+without affecting deterministic alerting.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from app.ai_keys import RotatingAPIKeyPool, build_gemini_key_pool, build_groq_key_pool
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -39,11 +41,15 @@ class AIJudge:
     def __init__(self) -> None:
         self._models: list[AIModel] = []
         self._initialized = False
+        self._gemini_keys = RotatingAPIKeyPool("gemini", [])
+        self._groq_keys = RotatingAPIKeyPool("groq", [])
 
     def initialize(self) -> None:
         self._models = []
+        self._gemini_keys = build_gemini_key_pool()
+        self._groq_keys = build_groq_key_pool()
 
-        if settings.gemini_api_key.strip():
+        if self._gemini_keys.configured:
             seen: set[str] = set()
             for model_id in (
                 settings.gemini_model_primary.strip(),
@@ -55,7 +61,7 @@ class AIJudge:
                     )
                     seen.add(model_id)
 
-        if settings.groq_api_key.strip() and settings.groq_model.strip():
+        if self._groq_keys.configured and settings.groq_model.strip():
             self._models.append(
                 AIModel(
                     name=settings.groq_model.strip(),
@@ -67,16 +73,25 @@ class AIJudge:
         self._initialized = True
         if self._models:
             logger.info(
-                "AI Judge initialized with model cascade: %s",
+                "AI Judge initialized with model cascade: %s (Gemini keys=%d, Groq keys=%d)",
                 " -> ".join(model.name for model in self._models),
+                len(self._gemini_keys.report()),
+                len(self._groq_keys.report()),
             )
         else:
             logger.info("AI Judge disabled: no AI API key configured")
 
+    def _pool_for(self, provider: str) -> RotatingAPIKeyPool:
+        return self._gemini_keys if provider == "gemini" else self._groq_keys
+
     def _available_models(self) -> list[AIModel]:
         if not self._initialized:
             self.initialize()
-        return [model for model in self._models if model.available]
+        return [
+            model
+            for model in self._models
+            if model.available and bool(self._pool_for(model.provider).candidates())
+        ]
 
     def can_call(self) -> bool:
         return bool(self._available_models())
@@ -158,7 +173,7 @@ class AIJudge:
                 model.errors += 1
                 model.calls += 1
                 model.cooldown_until = max(model.cooldown_until, time.monotonic() + 10.0)
-                logger.warning("AI model %s failed (%s); trying fallback", model.name, exc)
+                logger.warning("AI model %s failed (%s); trying fallback", model.name, type(exc).__name__)
             except Exception:
                 model.errors += 1
                 model.calls += 1
@@ -179,7 +194,6 @@ class AIJudge:
         elif status >= 500:
             model.cooldown_until = time.monotonic() + 15.0
         elif status in (401, 403, 404):
-            # Bad key, disabled API, or retired model: avoid hammering it.
             model.cooldown_until = time.monotonic() + 300.0
         else:
             model.cooldown_until = time.monotonic() + 10.0
@@ -189,10 +203,6 @@ class AIJudge:
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model.model_id}:generateContent"
         )
-        headers = {
-            "x-goog-api-key": settings.gemini_api_key,
-            "Content-Type": "application/json",
-        }
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -200,48 +210,97 @@ class AIJudge:
                 "temperature": 0.0,
             },
         }
-
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
+        last_error: httpx.HTTPStatusError | None = None
+        for key_state in self._gemini_keys.candidates():
+            headers = {
+                "x-goog-api-key": key_state.key,
+                "Content-Type": "application/json",
+            }
+            self._gemini_keys.record_attempt(key_state)
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code
+                if status in (401, 403, 429):
+                    self._gemini_keys.mark_http_failure(
+                        key_state,
+                        status,
+                        retry_after=exc.response.headers.get("Retry-After"),
+                    )
+                    logger.warning(
+                        "Gemini credential %s returned HTTP %s; rotating key",
+                        key_state.label,
+                        status,
+                    )
+                    continue
+                raise
+            self._gemini_keys.mark_success(key_state)
             data = response.json()
-
-        candidates = data.get("candidates") or []
-        if not candidates:
-            raise ValueError("Gemini returned no candidates")
-        parts = candidates[0].get("content", {}).get("parts") or []
-        text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
-        if not text.strip():
-            raise ValueError("Gemini returned an empty response")
-        return text
+            candidates = data.get("candidates") or []
+            if not candidates:
+                raise ValueError("Gemini returned no candidates")
+            parts = candidates[0].get("content", {}).get("parts") or []
+            text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
+            if not text.strip():
+                raise ValueError("Gemini returned an empty response")
+            return text
+        if last_error is not None:
+            raise last_error
+        raise ValueError("No Gemini API key is currently available")
 
     async def _call_groq(self, model: AIModel, prompt: str) -> str:
-        headers = {
-            "Authorization": f"Bearer {settings.groq_api_key}",
-            "Content-Type": "application/json",
-        }
         payload = {
             "model": model.model_id,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 96,
             "temperature": 0.0,
         }
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            response = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
+        last_error: httpx.HTTPStatusError | None = None
+        for key_state in self._groq_keys.candidates():
+            headers = {
+                "Authorization": f"Bearer {key_state.key}",
+                "Content-Type": "application/json",
+            }
+            self._groq_keys.record_attempt(key_state)
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+                    response = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code
+                if status in (401, 403, 429):
+                    self._groq_keys.mark_http_failure(
+                        key_state,
+                        status,
+                        retry_after=exc.response.headers.get("Retry-After"),
+                    )
+                    logger.warning(
+                        "Groq credential %s returned HTTP %s; rotating key",
+                        key_state.label,
+                        status,
+                    )
+                    continue
+                raise
+            self._groq_keys.mark_success(key_state)
             data = response.json()
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise ValueError("Groq returned no choices")
-        text = choices[0].get("message", {}).get("content") or ""
-        if not str(text).strip():
-            raise ValueError("Groq returned an empty response")
-        return str(text)
+            choices = data.get("choices") or []
+            if not choices:
+                raise ValueError("Groq returned no choices")
+            text = choices[0].get("message", {}).get("content") or ""
+            if not str(text).strip():
+                raise ValueError("Groq returned an empty response")
+            return str(text)
+        if last_error is not None:
+            raise last_error
+        raise ValueError("No Groq API key is currently available")
 
     def get_usage_report(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -257,6 +316,10 @@ class AIJudge:
                 }
                 for model in self._models
             ],
+            "keys": {
+                "gemini": self._gemini_keys.report(),
+                "groq": self._groq_keys.report(),
+            },
             "any_available": self.can_call(),
         }
 
