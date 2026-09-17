@@ -78,8 +78,17 @@ def _geometry(users: list[dict]) -> tuple[float, float, int]:
 
 
 def _region_key(users: list[dict]) -> str:
-    member_ids = ",".join(str(user["user_id"]) for user in sorted(users, key=lambda u: str(u["user_id"])))
-    digest = hashlib.sha1(member_ids.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
+    # Include coarse location/radius in the fingerprint. A saved-location move
+    # must immediately create a new cache key rather than briefly reusing the
+    # previous geographic snapshot for the same user IDs.
+    members: list[str] = []
+    for user in sorted(users, key=lambda u: str(u["user_id"])):
+        loc = user["location"]
+        members.append(
+            f"{user['user_id']}:{float(loc['latitude']):.3f}:{float(loc['longitude']):.3f}:"
+            f"{float(loc.get('radius_km', settings.default_radius_km)):.1f}"
+        )
+    digest = hashlib.sha1("|".join(members).encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
     return f"shared-{digest}"
 
 
@@ -280,9 +289,9 @@ class SharedRegionPoller:
                 )
 
             # Never turn one transient blank response into an empty sky. Reuse a
-            # prior region snapshot briefly; position ages continue increasing,
-            # so the existing 30s stale guard remains authoritative.
-            if previous is not None:
+            # prior non-empty region snapshot briefly; position ages continue
+            # increasing, so the existing 30s stale guard stays authoritative.
+            if previous is not None and previous.aircraft:
                 age = max(0.0, now_mono - previous.fetched_mono)
                 if age <= CONTINUITY_TTL_S:
                     logger.warning(
@@ -301,7 +310,20 @@ class SharedRegionPoller:
                         cache_age_s=age,
                     )
 
-            return PollResult([], by_provider, True, False, len(attempts), selected or "none", 0.0)
+            # A genuinely empty region is also a cacheable result. Without this,
+            # sparse/empty skies would retry two public providers (+ OpenSky)
+            # every five-second scheduler tick and waste more quota than busy
+            # regions. Cache emptiness at the 15-second discovery cadence.
+            empty_snapshot = SharedSnapshot(
+                fetched_mono=now_mono,
+                fetched_wall=now_wall,
+                aircraft=[],
+                by_provider=by_provider,
+                hot_until_mono=now_mono,
+                provider_name=selected or "empty",
+            )
+            self._snapshots[region.key] = empty_snapshot
+            return PollResult([], by_provider, True, False, len(attempts), empty_snapshot.provider_name, 0.0)
 
 
 _shared_poller = SharedRegionPoller()
