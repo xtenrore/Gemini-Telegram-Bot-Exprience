@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 from app.admin.auth import make_delegated_admin_token, verify_delegated_admin_token
 from app.config import settings
@@ -61,3 +62,10 @@ def test_priority_region_order_precedes_normal_region():
         radius_nm=70,
     )
     assert v36._region_order(priority_region) < v36._region_order(normal_region)
+
+
+def test_priority_region_promotion_forces_hot_window(monkeypatch):
+    snapshot = SimpleNamespace(hot_until_mono=0.0)
+    monkeypatch.setattr(v36.v35._shared_poller, "_snapshots", {"r1": snapshot})
+    v36._promote_priority_region("r1", 100.0)
+    assert snapshot.hot_until_mono == 100.0 + v36.v35.HOT_HOLD_S
