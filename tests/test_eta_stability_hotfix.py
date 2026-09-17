@@ -47,6 +47,34 @@ def test_uncertain_single_bad_prediction_is_not_cancellation_evidence():
     assert should_cancel_active_alert(pred, 5.0, 15.0) is False
 
 
+def test_confident_clear_miss_can_invalidate_eta_before_distance_turns_outward():
+    pred = SimpleNamespace(
+        stale=False,
+        already_passed=False,
+        state="Will not approach",
+        enters_alert_radius=False,
+        projected_closest_km=19.0,
+        distance_trend_km_s=-0.03,
+        turning_away=False,
+        confidence_score=0.72,
+    )
+    assert should_cancel_active_alert(pred, 5.8, 8.0) is True
+
+
+def test_small_miss_without_outward_motion_does_not_cancel_eta():
+    pred = SimpleNamespace(
+        stale=False,
+        already_passed=False,
+        state="Will not approach",
+        enters_alert_radius=False,
+        projected_closest_km=11.0,
+        distance_trend_km_s=-0.03,
+        turning_away=False,
+        confidence_score=0.8,
+    )
+    assert should_cancel_active_alert(pred, 5.8, 8.0) is False
+
+
 def test_cancellation_needs_three_consecutive_credible_cycles():
     pred = SimpleNamespace(
         stale=False,
