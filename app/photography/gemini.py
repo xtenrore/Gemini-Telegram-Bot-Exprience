@@ -14,6 +14,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.ai_keys import build_gemini_key_pool
 from app.config import settings
 from app.photography.models import CameraProfile, LensProfile, PhotoRecommendation, PhotographyContext
 
@@ -30,7 +31,6 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
     """Extract text from generateContent, while retaining old Interactions support."""
     chunks: list[str] = []
 
-    # generateContent response shape.
     for candidate in payload.get("candidates") or []:
         if not isinstance(candidate, dict):
             continue
@@ -43,7 +43,6 @@ def _extract_output_text(payload: dict[str, Any]) -> str:
     if chunks:
         return "".join(chunks).strip()
 
-    # Backwards compatibility for any recorded Interactions payloads/tests.
     for step in payload.get("steps") or []:
         if not isinstance(step, dict) or step.get("type") != "model_output":
             continue
@@ -87,8 +86,6 @@ def _gemini_json_schema(model_cls: type[BaseModel]) -> dict[str, Any]:
             return [clean(item) for item in value]
         if not isinstance(value, dict):
             return value
-        # `default` is emitted heavily by Pydantic but is not part of Gemini's
-        # documented structured-output JSON Schema subset and is not needed here.
         return {key: clean(item) for key, item in value.items() if key not in {"default", "examples"}}
 
     return clean(schema)
@@ -100,10 +97,11 @@ class GeminiPhotographyEngine:
     def __init__(self) -> None:
         self._models = [m for m in (settings.gemini_photo_model.strip(), settings.gemini_photo_fallback_model.strip()) if m]
         self._models = list(dict.fromkeys(self._models))
+        self._keys = build_gemini_key_pool()
 
     @property
     def enabled(self) -> bool:
-        return bool(settings.gemini_api_key.strip() and self._models)
+        return bool(self._keys.configured and self._models)
 
     async def _structured(
         self,
@@ -115,18 +113,16 @@ class GeminiPhotographyEngine:
     ) -> tuple[T, str]:
         """Run a single-turn structured request using Gemini generateContent.
 
-        Camera and lens identification are latency-sensitive and simple, so they try
-        the Flash-Lite fallback first. Full photographic recommendations continue to
-        prefer the configured primary model.
+        Key-specific auth/quota failures rotate to the next configured Gemini key.
+        Model/schema failures switch model instead of burning every API key.
         """
         if not self.enabled:
-            raise GeminiPhotographyError("GEMINI_API_KEY is not configured")
+            raise GeminiPhotographyError("No Gemini API key is configured")
 
         models = list(reversed(self._models)) if fast_first and len(self._models) > 1 else self._models
         last_error: Exception | None = None
         schema = _gemini_json_schema(model_cls)
         timeout_seconds = min(settings.gemini_photo_timeout_seconds, 15.0) if fast_first else settings.gemini_photo_timeout_seconds
-        headers = {"x-goog-api-key": settings.gemini_api_key, "Content-Type": "application/json"}
 
         for model_id in models:
             endpoint = f"{_GENERATE_CONTENT_BASE}/{quote(model_id, safe='')}:generateContent"
@@ -138,24 +134,77 @@ class GeminiPhotographyEngine:
                     "responseJsonSchema": schema,
                 },
             }
-            try:
-                timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(endpoint, headers=headers, json=payload)
-                response.raise_for_status()
-                result = model_cls.model_validate(_parse_json_text(_extract_output_text(response.json())))
-                logger.info("Gemini photography model %s succeeded via generateContent", model_id)
-                return result, model_id
-            except (httpx.HTTPError, ValidationError, ValueError, KeyError, TypeError, GeminiPhotographyError) as exc:
-                last_error = exc
-                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-                logger.warning(
-                    "Gemini photography model %s failed via generateContent%s (%s); trying fallback if available",
-                    model_id,
-                    f" (HTTP {status})" if status else "",
-                    type(exc).__name__,
-                )
-        raise GeminiPhotographyError(f"All Gemini photography models failed: {type(last_error).__name__ if last_error else 'unknown error'}")
+            key_candidates = self._keys.candidates()
+            if not key_candidates:
+                last_error = GeminiPhotographyError("All Gemini API keys are cooling down")
+                break
+
+            switch_model = False
+            for key_state in key_candidates:
+                headers = {"x-goog-api-key": key_state.key, "Content-Type": "application/json"}
+                self._keys.record_attempt(key_state)
+                try:
+                    timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        response = await client.post(endpoint, headers=headers, json=payload)
+                    response.raise_for_status()
+                    result = model_cls.model_validate(
+                        _parse_json_text(_extract_output_text(response.json()))
+                    )
+                    self._keys.mark_success(key_state)
+                    logger.info(
+                        "Gemini photography model %s succeeded via %s",
+                        model_id,
+                        key_state.label,
+                    )
+                    return result, model_id
+                except httpx.HTTPStatusError as exc:
+                    last_error = exc
+                    status = exc.response.status_code
+                    if status in (401, 403, 429):
+                        self._keys.mark_http_failure(
+                            key_state,
+                            status,
+                            retry_after=exc.response.headers.get("Retry-After"),
+                        )
+                        logger.warning(
+                            "Gemini photography credential %s failed with HTTP %s; rotating key",
+                            key_state.label,
+                            status,
+                        )
+                        continue
+                    switch_model = True
+                    logger.warning(
+                        "Gemini photography model %s failed with HTTP %s; trying model fallback",
+                        model_id,
+                        status,
+                    )
+                    break
+                except (ValidationError, ValueError, KeyError, TypeError, GeminiPhotographyError) as exc:
+                    last_error = exc
+                    switch_model = True
+                    logger.warning(
+                        "Gemini photography model %s returned unusable output (%s); trying model fallback",
+                        model_id,
+                        type(exc).__name__,
+                    )
+                    break
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    switch_model = True
+                    logger.warning(
+                        "Gemini photography model %s network failure (%s); trying model fallback",
+                        model_id,
+                        type(exc).__name__,
+                    )
+                    break
+
+            if switch_model:
+                continue
+
+        raise GeminiPhotographyError(
+            f"All Gemini photography models/keys failed: {type(last_error).__name__ if last_error else 'unknown error'}"
+        )
 
     async def resolve_camera(self, user_text: str) -> CameraProfile:
         prompt = f'''You are the camera-identification component of an aviation photography assistant.
