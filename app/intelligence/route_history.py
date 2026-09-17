@@ -1,7 +1,7 @@
 """Flight-number route-history gate for Plane? spotting alerts.
 
 This module deliberately keys historical routing by the transmitted flight callsign
-(e.g. THY1017/TK1017), never by aircraft registration or ICAO24.  Live CPA remains
+(e.g. THY1017/TK1017), never by aircraft registration or ICAO24. Live CPA remains
 the primary detector; route history is a veto layer used to avoid straight-line
 false positives when a scheduled arrival normally turns for its destination.
 """
@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Iterable
+from urllib.parse import quote
 
 from app.aircraft.providers import get_http_client
 from app.config import settings
@@ -71,11 +72,7 @@ class RouteGateResult:
 
 
 def normalize_flight_key(callsign: str | None) -> str:
-    """Return a stable commercial-flight key, not an aircraft identity.
-
-    Registration-looking strings with no numeric flight number are deliberately
-    excluded so a tail swap cannot poison the route model.
-    """
+    """Return a stable commercial-flight key, not an aircraft identity."""
     key = _CALLSIGN_RE.sub("", (callsign or "").upper())
     if len(key) < 3 or not any(ch.isalpha() for ch in key) or not any(ch.isdigit() for ch in key):
         return ""
@@ -134,11 +131,7 @@ def route_similarity_km(a: Iterable[Any], b: Iterable[Any]) -> float | None:
 
 
 def _current_to_history_similarity_km(current: Iterable[Any], historical: Iterable[Any]) -> float | None:
-    """Compare only the observed current prefix to a complete historical path.
-
-    A symmetric metric would unfairly penalise today's still-in-progress path for
-    not containing future points yet.
-    """
+    """Compare only the observed current prefix to a complete historical path."""
     cur, hist = _clean_points(current), _clean_points(historical)
     return _directed_similarity_km(cur, hist)
 
@@ -274,9 +267,8 @@ def evaluate_route_gate(
         if (value := _minimum_distance_km(route, observer_lat, observer_lon)) is not None
     ]
     outside_margin = max(2.5, alert_radius_km * 0.18)
-    all_historical_outside = (
-        len(historical_minima) >= 1
-        and all(value > alert_radius_km + outside_margin for value in historical_minima)
+    all_historical_outside = bool(historical_minima) and all(
+        value > alert_radius_km + outside_margin for value in historical_minima
     )
 
     required_similar_days = 1 if history_days == 1 else 2
@@ -321,6 +313,22 @@ def _airport(raw: Any) -> AirportInfo | None:
         name=str(raw.get("name") or ""),
         latitude=lat,
         longitude=lon,
+    )
+
+
+def _route_info(callsign: str, payload: Any) -> FlightRouteInfo | None:
+    """Parse either routeset's list shape or the single-route dict shape."""
+    raw = payload[0] if isinstance(payload, list) and payload else payload
+    if not isinstance(raw, dict) or raw.get("airport_codes") in (None, "", "unknown"):
+        return None
+    airports = [_airport(item) for item in (raw.get("_airports") or [])]
+    airports = [item for item in airports if item is not None]
+    return FlightRouteInfo(
+        callsign=callsign,
+        airport_codes=str(raw.get("airport_codes") or "unknown"),
+        plausible=bool(raw.get("plausible", False)),
+        origin=airports[0] if airports else None,
+        destination=airports[-1] if len(airports) >= 2 else None,
     )
 
 
@@ -386,36 +394,72 @@ class RouteHistoryService:
         key = normalize_flight_key(getattr(ac, "callsign", ""))
         if not key or getattr(ac, "latitude", None) is None or getattr(ac, "longitude", None) is None:
             return None
+
         now = time.monotonic()
         cached = self._route_cache.get(key)
-        if cached and now - cached[0] < max(60, int(settings.route_lookup_cache_seconds)):
-            return cached[1]
+        if cached:
+            ttl = max(60, int(settings.route_lookup_cache_seconds)) if cached[1] is not None else 60
+            if now - cached[0] < ttl:
+                return cached[1]
+
+        client = await get_http_client()
+        lat = float(ac.latitude)
+        lon = float(ac.longitude)
         route: FlightRouteInfo | None = None
+
+        # Preferred bulk endpoint. Railway has occasionally received a non-JSON
+        # 200 response from it, so JSON decoding failure is intentionally recoverable.
+        bulk_status: int | None = None
         try:
-            client = await get_http_client()
             response = await client.post(
                 settings.route_lookup_url,
-                json={"planes": [{"callsign": key, "lat": float(ac.latitude), "lng": float(ac.longitude)}]},
+                json={"planes": [{"callsign": key, "lat": lat, "lng": lon}]},
             )
+            bulk_status = response.status_code
             response.raise_for_status()
-            payload = response.json()
-            raw = payload[0] if isinstance(payload, list) and payload else None
-            if isinstance(raw, dict) and raw.get("airport_codes") not in (None, "", "unknown"):
-                airports = [_airport(item) for item in (raw.get("_airports") or [])]
-                airports = [item for item in airports if item is not None]
-                route = FlightRouteInfo(
-                    callsign=key,
-                    airport_codes=str(raw.get("airport_codes") or "unknown"),
-                    plausible=bool(raw.get("plausible", False)),
-                    origin=airports[0] if airports else None,
-                    destination=airports[-1] if len(airports) >= 2 else None,
-                )
+            route = _route_info(key, response.json())
         except Exception as exc:
-            logger.info("route_lookup_unavailable callsign=%s error=%s", key, type(exc).__name__)
+            logger.info(
+                "route_lookup_bulk_failed callsign=%s status=%s error=%s",
+                key,
+                bulk_status if bulk_status is not None else "na",
+                type(exc).__name__,
+            )
+
+        # Official ADSB.lol single-route endpoint. It returns the same airport
+        # metadata and calculates the plausible flag from the live position.
+        if route is None:
+            single_status: int | None = None
+            try:
+                url = (
+                    f"{settings.route_lookup_single_url.rstrip('/')}"
+                    f"/{quote(key, safe='')}/{lat:.5f}/{lon:.5f}"
+                )
+                response = await client.get(url)
+                single_status = response.status_code
+                response.raise_for_status()
+                route = _route_info(key, response.json())
+            except Exception as exc:
+                logger.info(
+                    "route_lookup_single_failed callsign=%s status=%s error=%s",
+                    key,
+                    single_status if single_status is not None else "na",
+                    type(exc).__name__,
+                )
+
         self._route_cache[key] = (now, route)
         return route
 
-    async def evaluate(self, ac: Any, pred: Any, *, user_lat: float, user_lon: float, alert_radius_km: float, current_samples: Iterable[Any]) -> RouteGateResult:
+    async def evaluate(
+        self,
+        ac: Any,
+        pred: Any,
+        *,
+        user_lat: float,
+        user_lon: float,
+        alert_radius_km: float,
+        current_samples: Iterable[Any],
+    ) -> RouteGateResult:
         key = normalize_flight_key(getattr(ac, "callsign", ""))
         if not key:
             return RouteGateResult(False, "", "no usable flight-number callsign")
