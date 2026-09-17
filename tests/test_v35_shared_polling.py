@@ -60,6 +60,13 @@ def test_distant_users_are_split_into_safe_provider_regions():
     assert all(region.radius_nm <= 250 for region in regions)
 
 
+def test_region_key_changes_when_saved_location_moves():
+    before = v35.build_shared_regions([_user(1, 41.0, 29.0)])[0]
+    after = v35.build_shared_regions([_user(1, 41.25, 29.0)])[0]
+
+    assert before.key != after.key
+
+
 @pytest.mark.asyncio
 async def test_successful_region_poll_uses_one_public_provider_and_cache(monkeypatch):
     calls: list[tuple[str, ...]] = []
@@ -171,3 +178,30 @@ async def test_blank_primary_uses_fallback_instead_of_querying_every_provider(mo
     assert len(calls) == 2
     assert calls[0] != calls[1]
     assert all(name in v35.PUBLIC_PROVIDERS for name in calls)
+
+
+@pytest.mark.asyncio
+async def test_empty_region_is_cached_instead_of_retrying_each_five_second_tick(monkeypatch):
+    calls = 0
+
+    class FakeManager:
+        opensky = SimpleNamespace(can_request_now=lambda: False)
+
+        async def query_providers(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            name = (kwargs.get("provider_names") or ["unknown"])[0]
+            return [], {name: []}
+
+    monkeypatch.setattr(v35.monitor, "_provider_manager", FakeManager())
+    poller = v35.SharedRegionPoller()
+    region = v35.build_shared_regions([_user(1, 41.0, 29.0)])[0]
+
+    first = await poller.poll(region, cycle_number=0, stagger_new_regions=False)
+    second = await poller.poll(region, cycle_number=1, stagger_new_regions=False)
+
+    assert first.fresh is True
+    assert first.provider_queries == 2
+    assert second.cache_hit is True
+    assert second.provider_queries == 0
+    assert calls == 2
