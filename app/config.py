@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     opensky_credentials_json: str = ""
     api_keys_dir: str = "api"
 
+    # Flight-number route intelligence. The default lookup is free/public and
+    # returns a plausibility flag plus route airports for an observed callsign.
+    route_lookup_url: str = "https://api.adsb.lol/api/0/routeset"
+    route_lookup_cache_seconds: int = 1200
+    route_history_days: int = 3
+    route_sample_interval_seconds: int = 30
+
     # AI providers
     gemini_api_key: str = ""
     gemini_model_primary: str = "gemini-3.5-flash-lite"
