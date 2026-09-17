@@ -67,7 +67,9 @@ jobs:
         shell: sh
         run: |
           set -eu
-          railway up . \
+          # Do not pass a trailing '.' here. Current Railway CLI versions have
+          # a path-prefix bug for relative path arguments ("prefix not found").
+          railway up \
             --project "$PROJECT_ID" \
             --service "$SERVICE_ID" \
             --environment "$ENVIRONMENT_ID" \
