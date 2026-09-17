@@ -209,8 +209,6 @@ def evaluate_route_gate(
         )
         if speed > 0.055 and descending and dest_distance <= 120.0 and time_to_cpa_s is not None and time_to_cpa_s > 0:
             eta_destination_s = dest_distance / speed
-            # A landing route that terminates materially before the straight-line
-            # observer CPA cannot physically continue on that projection.
             if eta_destination_s + 75.0 < float(time_to_cpa_s):
                 return RouteGateResult(
                     True,
@@ -223,12 +221,12 @@ def evaluate_route_gate(
                     route_plausible=True,
                 )
 
-    if history_days < 2:
+    if history_days == 0:
         return RouteGateResult(
             False,
             key,
-            "insufficient flight-number history; live CPA remains authoritative",
-            history_days=history_days,
+            "no previous flight-number route captured yet; live CPA remains authoritative",
+            history_days=0,
             destination_code=dest_code,
             destination_distance_km=dest_distance,
             route_plausible=route_plausible,
@@ -236,8 +234,6 @@ def evaluate_route_gate(
 
     pairwise = _pairwise_history_similarity(history)
     history_similarity = median(pairwise) if pairwise else None
-    # If this flight number itself used materially different paths in the last
-    # three days, do not gamble on a straight-line alert.
     if history_similarity is not None and history_similarity > max(7.5, alert_radius_km * 0.45):
         return RouteGateResult(
             True,
@@ -259,8 +255,6 @@ def evaluate_route_gate(
     similar_limit = max(5.0, alert_radius_km * 0.35)
     similar_days = sum(value <= similar_limit for value in current_sims)
 
-    # Today's prefix diverged from the stable recent route pattern.  Suppress
-    # instead of pretending the old route pattern still predicts the turn.
     if len(current) >= 4 and current_similarity is not None and current_similarity > max(8.0, alert_radius_km * 0.55):
         return RouteGateResult(
             True,
@@ -281,14 +275,12 @@ def evaluate_route_gate(
     ]
     outside_margin = max(2.5, alert_radius_km * 0.18)
     all_historical_outside = (
-        len(historical_minima) >= 2
+        len(historical_minima) >= 1
         and all(value > alert_radius_km + outside_margin for value in historical_minima)
     )
 
-    # Core expected-turn rule: same flight number, stable same route, and each
-    # recent occurrence stayed outside the alert radius.  The current straight
-    # vector is therefore treated as a pre-turn false positive.
-    if all_historical_outside and similar_days >= 2:
+    required_similar_days = 1 if history_days == 1 else 2
+    if all_historical_outside and similar_days >= required_similar_days:
         return RouteGateResult(
             True,
             key,
@@ -370,7 +362,6 @@ class RouteHistoryService:
                         "utc_date": day,
                         "updated_at": datetime.now(timezone.utc),
                         "expires_at": datetime.now(timezone.utc) + timedelta(days=8),
-                        "last_icao24": str(getattr(ac, "icao24", "") or ""),
                     },
                     "$push": {"points": {"$each": [point], "$slice": -360}},
                 },
