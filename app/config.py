@@ -33,6 +33,15 @@ class Settings(BaseSettings):
         "https://auth.opensky-network.org/auth/realms/"
         "opensky-network/protocol/openid-connect/token"
     )
+    # Preferred hosted format: one OpenSky credential pair per secret slot.
+    # Each OPENSKY_N may be JSON {"clientId":"...","clientSecret":"..."}
+    # or the compact form clientId:clientSecret. The legacy aggregate JSON
+    # variable remains supported for backwards compatibility.
+    opensky_1: str = ""
+    opensky_2: str = ""
+    opensky_3: str = ""
+    opensky_4: str = ""
+    opensky_5: str = ""
     opensky_credentials_json: str = ""
     api_keys_dir: str = "api"
 
@@ -47,8 +56,13 @@ class Settings(BaseSettings):
 
     # AI providers
     gemini_api_key: str = ""
+    gemini_api_key_2: str = ""
     gemini_model_primary: str = "gemini-3.5-flash-lite"
     gemini_model_secondary: str = "gemini-3.5-flash"
+    # User-facing preferred names are GROQ_KEY / GROQ_KEY_2. GROQ_API_KEY is
+    # retained so existing deployments do not break.
+    groq_key: str = ""
+    groq_key_2: str = ""
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
