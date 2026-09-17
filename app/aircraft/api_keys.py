@@ -1,7 +1,9 @@
 """OpenSky API credential rotation with OAuth2 token support.
 
-Hosted deployments should provide credentials through the
-``OPENSKY_CREDENTIALS_JSON`` environment variable instead of committed files.
+Hosted deployments can provide one credential pair in each ``OPENSKY_1`` through
+``OPENSKY_5`` secret. Each slot accepts either JSON with ``clientId`` and
+``clientSecret`` or the compact ``clientId:clientSecret`` form. The legacy
+``OPENSKY_CREDENTIALS_JSON`` aggregate remains supported.
 Local development may still use untracked JSON files under ``API_KEYS_DIR``.
 """
 
@@ -64,31 +66,84 @@ class OpenSkyKeyManager:
             return None
         return OpenSkyKey(client_id=client_id, client_secret=client_secret, source_file=source)
 
-    def _load_env_credentials(self) -> list[OpenSkyKey]:
-        raw = settings.opensky_credentials_json.strip()
-        if not raw:
+    def _parse_secret_slot(self, raw: str, source: str) -> list[OpenSkyKey]:
+        value = (raw or "").strip()
+        if not value:
             return []
+
         try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.error("OPENSKY_CREDENTIALS_JSON is invalid JSON: %s", exc)
-            return []
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            payload = None
 
         if isinstance(payload, dict):
-            payload = [payload]
-        if not isinstance(payload, list):
-            logger.error("OPENSKY_CREDENTIALS_JSON must be a JSON object or array")
-            return []
+            key = self._parse_credential(payload, source)
+            return [key] if key else []
+        if isinstance(payload, list):
+            keys: list[OpenSkyKey] = []
+            for index, item in enumerate(payload, start=1):
+                if isinstance(item, dict):
+                    key = self._parse_credential(item, f"{source}:{index}")
+                    if key:
+                        keys.append(key)
+            return keys
 
+        # Convenient GitHub-secret form: OPENSKY_1=id:secret
+        if ":" in value:
+            client_id, client_secret = value.split(":", 1)
+            key = self._parse_credential(
+                {"clientId": client_id, "clientSecret": client_secret}, source
+            )
+            return [key] if key else []
+
+        logger.warning(
+            "Skipping OpenSky credential from %s: expected JSON or clientId:clientSecret",
+            source,
+        )
+        return []
+
+    def _load_env_credentials(self) -> list[OpenSkyKey]:
         keys: list[OpenSkyKey] = []
-        for index, item in enumerate(payload, start=1):
-            if not isinstance(item, dict):
-                logger.warning("Skipping non-object OpenSky credential at index %d", index)
+        slots = (
+            ("OPENSKY_1", settings.opensky_1),
+            ("OPENSKY_2", settings.opensky_2),
+            ("OPENSKY_3", settings.opensky_3),
+            ("OPENSKY_4", settings.opensky_4),
+            ("OPENSKY_5", settings.opensky_5),
+        )
+        for label, raw in slots:
+            keys.extend(self._parse_secret_slot(raw, label))
+
+        legacy = settings.opensky_credentials_json.strip()
+        if legacy:
+            try:
+                payload = json.loads(legacy)
+            except json.JSONDecodeError as exc:
+                logger.error("OPENSKY_CREDENTIALS_JSON is invalid JSON: %s", exc)
+                payload = []
+            if isinstance(payload, dict):
+                payload = [payload]
+            if isinstance(payload, list):
+                for index, item in enumerate(payload, start=1):
+                    if not isinstance(item, dict):
+                        logger.warning("Skipping non-object OpenSky credential at index %d", index)
+                        continue
+                    key = self._parse_credential(item, f"OPENSKY_CREDENTIALS_JSON:{index}")
+                    if key:
+                        keys.append(key)
+            elif payload:
+                logger.error("OPENSKY_CREDENTIALS_JSON must be a JSON object or array")
+
+        # A slot may duplicate a credential still present in the legacy aggregate.
+        unique: list[OpenSkyKey] = []
+        seen: set[tuple[str, str]] = set()
+        for key in keys:
+            signature = (key.client_id, key.client_secret)
+            if signature in seen:
                 continue
-            key = self._parse_credential(item, f"env:{index}")
-            if key:
-                keys.append(key)
-        return keys
+            seen.add(signature)
+            unique.append(key)
+        return unique
 
     def _load_file_credentials(self) -> list[OpenSkyKey]:
         keys_dir = Path(settings.api_keys_dir)
@@ -127,16 +182,21 @@ class OpenSkyKeyManager:
         if not self._keys:
             return None
         self._maybe_reset_daily_counters()
-        key = self._find_available_key()
-        if key is None:
-            return None
-        if key.access_token and time.monotonic() < key.token_expires_at - 300:
-            return key.access_token
 
         async with self._token_lock:
-            if key.access_token and time.monotonic() < key.token_expires_at - 300:
-                return key.access_token
-            return await self._acquire_token(key)
+            for _ in range(len(self._keys)):
+                key = self._find_available_key()
+                if key is None:
+                    return None
+                if key.access_token and time.monotonic() < key.token_expires_at - 300:
+                    return key.access_token
+                token = await self._acquire_token(key)
+                if token:
+                    return token
+                if not key.is_exhausted:
+                    # Network/server failure is not evidence that another credential is better.
+                    return None
+            return None
 
     async def _acquire_token(self, key: OpenSkyKey) -> str | None:
         try:
@@ -152,8 +212,22 @@ class OpenSkyKeyManager:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.warning(
+                "OpenSky token rejected credential %s with HTTP %s",
+                key.source_file,
+                status,
+            )
+            if status in (400, 401, 403, 429):
+                key.is_exhausted = True
+                if status == 429:
+                    key.rate_limit_hits += 1
+                    key.last_rate_limited_at = time.time()
+                self._rotate_to_next()
+            return None
         except Exception as exc:
-            logger.warning("Failed to acquire OpenSky token for credential %s: %s", key.source_file, exc)
+            logger.warning("Failed to acquire OpenSky token for credential %s: %s", key.source_file, type(exc).__name__)
             return None
 
         access_token = str(data.get("access_token") or "")
@@ -176,7 +250,13 @@ class OpenSkyKeyManager:
         key.access_token = ""
         key.token_expires_at = 0.0
         async with self._token_lock:
-            return await self._acquire_token(key)
+            token = await self._acquire_token(key)
+            if token:
+                return token
+            replacement = self._find_available_key()
+            if replacement is None or replacement is key:
+                return None
+            return await self._acquire_token(replacement)
 
     def get_current_credentials(self) -> tuple[str, str] | None:
         key = self._find_available_key()
