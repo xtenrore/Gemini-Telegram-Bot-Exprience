@@ -1,8 +1,8 @@
-# Plane?
+# Plane Alerts
 
 **Real-time aircraft spotting alerts with trajectory-aware filtering.**
 
-Plane? is a Telegram-based aircraft spotting system built around one simple rule: **an aircraft being nearby is not enough to alert**. It follows live ADS-B motion, estimates the aircraft's closest point of approach to a saved location, and only sends an approach alert when the projected pass actually makes sense.
+Plane Alerts is a Telegram-based aircraft spotting system built around one simple rule: **an aircraft being nearby is not enough to alert**. It follows live ADS-B motion, estimates the aircraft's closest point of approach to a saved location, and only sends an approach alert when the projected pass actually makes sense.
 
 The current production version is **Plane? v3.5**. It runs on Railway as a single service containing the FastAPI API, Telegram bot, and background aircraft monitor.
 
