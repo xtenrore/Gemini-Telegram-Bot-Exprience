@@ -73,10 +73,6 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
     turning_away = bool(getattr(prediction, "turning_away", False)) or str(getattr(prediction, "state", "")) == "Turning away"
     confidence_score = float(getattr(prediction, "confidence_score", 1.0) if getattr(prediction, "confidence_score", None) is not None else 1.0)
 
-    # A confident, very large CPA invalidation is itself credible evidence after
-    # the caller's consecutive-cycle confirmation. This covers lateral course
-    # changes where distance can still be decreasing for a while even though the
-    # aircraft is now projected to miss the observer by a wide margin.
     state = str(getattr(prediction, "state", ""))
     clear_miss_margin_km = max(5.0, radius * 0.50)
     clear_confident_miss = (
@@ -85,11 +81,21 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
         and confidence_score >= 0.58
     )
 
-    # Ordinary "Will not approach" remains insufficient by itself: it can be
-    # caused by one bad heading sample. The clear-miss path above deliberately
-    # requires medium+ confidence, a large radius margin, material worsening,
-    # and still needs three consecutive cycles at the caller.
-    return (moving_away or turning_away or clear_confident_miss) and confidence_score >= 0.36
+    # Production logs can contain a long run of fresh, internally consistent
+    # low/medium-confidence predictions after a turn.  Keeping the old ETA alive
+    # forever in that case is worse than acknowledging a very large deterministic
+    # miss.  The extreme-miss path is intentionally conservative: the new CPA has
+    # to be far outside the radius, materially worse than the stored qualifying
+    # CPA, at least Low confidence, and the caller still requires three consecutive
+    # cycles.  A single provider/heading spike therefore still cannot cancel.
+    extreme_miss_margin_km = max(15.0, radius * 1.50)
+    extreme_repeated_miss = (
+        state == "Will not approach"
+        and new_cpa >= radius + extreme_miss_margin_km
+        and confidence_score >= 0.36
+    )
+
+    return (moving_away or turning_away or clear_confident_miss or extreme_repeated_miss) and confidence_score >= 0.36
 
 
 def advance_cancellation_confirmation(previous_count: int, candidate: bool, *, required: int = CANCELLATION_CONFIRMATIONS_REQUIRED) -> tuple[bool, int]:
