@@ -274,6 +274,7 @@ async def stats() -> dict[str, Any]:
         "version": "3.5.0",
         "active_users": active_users,
         "total_users": total_users,
+        "poll_interval_seconds": settings.poll_interval_seconds,
         "base_monitor_interval_seconds": settings.poll_interval_seconds,
         "discovery_poll_interval_seconds": 15,
         "hot_region_poll_interval_seconds": 5,
