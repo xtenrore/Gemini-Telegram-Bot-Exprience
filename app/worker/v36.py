@@ -179,6 +179,11 @@ async def _monitor_cycle_v36() -> None:
                 cycle_number=cycle_number,
                 stagger=stagger and not region_has_priority,
             )
+            # On a priority region's first ever poll there was no snapshot to
+            # promote before the request. Promote the newly-created snapshot too,
+            # otherwise that first quiet snapshot would fall back to 15 seconds.
+            if region_has_priority:
+                _promote_priority_region(region.key, time.monotonic())
             notifications += sent
             provider_queries += poll.provider_queries
             cache_hits += int(poll.cache_hit)
