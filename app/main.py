@@ -1,4 +1,4 @@
-"""Plane? v3.5 aircraft spotting intelligence, Telegram bot, and web server."""
+"""Plane? v3.6 aircraft spotting intelligence, Telegram bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from telegram import BotCommand, Update
 from telegram.ext import Application
 
+from app.admin.auth import DelegatedAdminMiddleware
 from app.admin.routes import router as admin_router
+from app.admin.v36_routes import router as admin_v36_router
 from app.aircraft.api_keys import opensky_key_manager
 from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
@@ -23,7 +25,7 @@ from app.database import close_db, connect_db, get_db, system_status_col, users_
 from app.logging_security import configure_secure_logging
 from app.photography.telegram import register_photography_handlers
 from app.worker.monitor import get_cycle_stats, init_services
-from app.worker.v35 import run_monitor_cycle_v35 as run_monitor_cycle
+from app.worker.v36 import run_monitor_cycle_v36 as run_monitor_cycle
 
 logger = logging.getLogger(__name__)
 telegram_app: Application | None = None
@@ -33,14 +35,13 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info(
-        "Integrated ADS-B worker enabled: base interval=%ds, v3.5 adaptive shared polling active",
+        "Integrated ADS-B worker enabled: base interval=%ds, v3.6 priority-aware shared polling active",
         settings.poll_interval_seconds,
     )
     first_cycle_confirmed = False
     while True:
         cycle_started = time.monotonic()
         try:
-            # get_db raises until the Atlas connection has been established.
             get_db()
             await run_monitor_cycle()
             if not first_cycle_confirmed:
@@ -69,7 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
     configure_secure_logging()
-    logger.info("Initializing Plane? v3.5 Spotting Intelligence (shared adaptive ADS-B polling + deterministic photography core)...")
+    logger.info("Initializing Plane? v3.6 Admin Control + Spotting Intelligence...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
@@ -96,8 +97,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("OpenSky key manager: %d key(s) available.", key_count)
     await init_services()
 
-    # Keep monitoring in the same Python process so the production service has a
-    # single bounded-memory runtime for the API, Telegram, and spotting worker.
     monitor_task = asyncio.create_task(_monitor_loop(), name="aircraft-monitor")
 
     bot_token = settings.telegram_bot_token.strip()
@@ -147,7 +146,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    logger.info("Shutting down Plane? v3.5...")
+    logger.info("Shutting down Plane? v3.6...")
     if telegram_app:
         try:
             if telegram_app.updater and telegram_app.updater.running:
@@ -176,7 +175,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="Plane? Spotting Intelligence",
     description="Deterministic real-time ADS-B spotting intelligence with optional Gemini enhancement",
-    version="3.5.0",
+    version="3.6.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -186,7 +185,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(DelegatedAdminMiddleware)
 app.include_router(admin_router, prefix="/admin", tags=["admin"])
+app.include_router(admin_v36_router, prefix="/admin", tags=["admin-v3.6"])
 
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=Response)
@@ -219,25 +220,28 @@ async def health_check() -> dict[str, Any]:
             is_stale = (time.time() - last_time) > (settings.poll_interval_seconds * 4)
             worker_info = {
                 "status": "active" if not is_stale else "stale",
-                "version": doc.get("plane_version", "3.5.0"),
+                "version": doc.get("plane_version", "3.6.0"),
                 "total_cycles": doc.get("total_cycles", 0),
                 "last_cycle_duration_ms": doc.get("last_cycle_duration_ms", 0.0),
                 "seconds_since_last_cycle": round(time.time() - last_time, 1),
-                "polling_mode": doc.get("polling_mode", "adaptive-shared-regions"),
+                "polling_mode": doc.get("polling_mode", "adaptive-shared-regions-priority"),
                 "shared_regions_last_cycle": doc.get("shared_regions_last_cycle", 0),
                 "provider_queries_last_cycle": doc.get("provider_queries_last_cycle", 0),
                 "shared_snapshot_cache_hits_last_cycle": doc.get("shared_snapshot_cache_hits_last_cycle", 0),
+                "priority_users_last_cycle": doc.get("priority_users_last_cycle", 0),
+                "deferred_users_last_cycle": doc.get("deferred_users_last_cycle", 0),
+                "notifications_paused_last_cycle": doc.get("notifications_paused_last_cycle", 0),
             }
         else:
             stats = get_cycle_stats()
             if stats.get("total_cycles", 0) > 0:
-                worker_info = {"status": "active (in-process)", "version": "3.5.0", "total_cycles": stats.get("total_cycles", 0)}
+                worker_info = {"status": "active (in-process)", "version": "3.6.0", "total_cycles": stats.get("total_cycles", 0)}
     except Exception:
         pass
 
     return {
         "status": "healthy" if db_ok else "degraded",
-        "version": "3.5.0",
+        "version": "3.6.0",
         "database_connected": db_ok,
         "bot_mode": bot_status,
         "uptime_seconds": round(time.time() - _server_start_time, 1),
@@ -247,6 +251,7 @@ async def health_check() -> dict[str, Any]:
             "gemini_advisor_enabled": bool(settings.gemini_api_key.strip()),
             "weather_provider": "Open-Meteo",
             "shared_adaptive_adsb_polling": True,
+            "priority_admin_controls": True,
         },
         "python_version": platform.python_version(),
     }
@@ -266,18 +271,22 @@ async def stats() -> dict[str, Any]:
                 "shared_regions_last_cycle": doc.get("shared_regions_last_cycle", 0),
                 "provider_queries_last_cycle": doc.get("provider_queries_last_cycle", 0),
                 "shared_snapshot_cache_hits_last_cycle": doc.get("shared_snapshot_cache_hits_last_cycle", 0),
-                "polling_mode": doc.get("polling_mode", "adaptive-shared-regions"),
+                "priority_users_last_cycle": doc.get("priority_users_last_cycle", 0),
+                "deferred_users_last_cycle": doc.get("deferred_users_last_cycle", 0),
+                "notifications_paused_last_cycle": doc.get("notifications_paused_last_cycle", 0),
+                "polling_mode": doc.get("polling_mode", "adaptive-shared-regions-priority"),
             }
     except Exception:
         pass
     return {
-        "version": "3.5.0",
+        "version": "3.6.0",
         "active_users": active_users,
         "total_users": total_users,
         "poll_interval_seconds": settings.poll_interval_seconds,
         "base_monitor_interval_seconds": settings.poll_interval_seconds,
         "discovery_poll_interval_seconds": 15,
         "hot_region_poll_interval_seconds": 5,
+        "priority_hot_interval_seconds": 5,
         "default_radius_km": settings.default_radius_km,
         "cooldown_minutes": settings.cooldown_minutes,
         "cycle_stats": get_cycle_stats(),
