@@ -1,6 +1,7 @@
 """Plane? v3.4 Spotting Intelligence monitoring loop."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -23,6 +24,7 @@ from app.intelligence.lifecycle import (
 )
 from app.intelligence.celestial import positions as celestial_positions
 from app.intelligence.environment import detect_crossing, estimate_atmosphere, estimate_contrail, interpolate_flight_level
+from app.intelligence.route_history import route_history_service
 from app.intelligence.trajectory import HistorySample, TrajectoryHistoryStore, predict_trajectory
 from app.intelligence.upper_air import get_upper_air_profile
 from app.photography.conditions import get_current_conditions
@@ -281,6 +283,17 @@ async def _process_region(geohash_key: str, region_users: list[dict]) -> int:
                 s.position_age_s,
             )
 
+    # Persist a bounded local route trace by flight callsign, not by tail/ICAO24.
+    # The service self-throttles samples, so this is cheap on 5-second monitor cycles.
+    if accepted_aircraft:
+        observations = await asyncio.gather(
+            *(route_history_service.observe(ac, now=now) for ac in accepted_aircraft),
+            return_exceptions=True,
+        )
+        failures = sum(isinstance(item, Exception) for item in observations)
+        if failures:
+            logger.warning("flight_route_observation_failures count=%d", failures)
+
     for u in region_users:
         await provider_learner.record_cycle_observation(
             user_id=u["user_id"],
@@ -349,7 +362,49 @@ async def _match_user_aircraft(user: dict, aircraft_list: list, results_by_provi
         stable_previous_cpa = (old or {}).get("projected_closest_km")
         observed_closest = min(float((old or {}).get("observed_closest_km") or current), float(current))
         changed = prediction_changed(stable_previous_cpa, pred.projected_closest_km, radius)
-        qualifies = pred.enters_alert_radius and pred.confidence_score >= _threshold(spot["min_confidence"])
+        active = bool(old and old.get("message_id") and old.get("active"))
+        live_qualifies = pred.enters_alert_radius and pred.confidence_score >= _threshold(spot["min_confidence"])
+
+        route_gate = None
+        route_suppressed = False
+        if live_qualifies or active:
+            try:
+                route_gate = await route_history_service.evaluate(
+                    ac,
+                    pred,
+                    user_lat=lat,
+                    user_lon=lon,
+                    alert_radius_km=radius,
+                    current_samples=hist,
+                )
+                route_suppressed = route_gate.suppress_alert
+            except Exception:
+                # Route enrichment must never break the deterministic live CPA loop.
+                logger.exception("route_gate_failed callsign=%s icao=%s user=%s", ac.callsign, ac.icao24, uid)
+
+        qualifies = live_qualifies and not route_suppressed
+        route_state = {}
+        if route_gate is not None:
+            route_state = {
+                "route_callsign": route_gate.callsign,
+                "route_destination": route_gate.destination_code,
+                "route_history_days": route_gate.history_days,
+                "route_similar_days": route_gate.similar_days,
+                "route_similarity_km": route_gate.similarity_km,
+                "route_gate_reason": route_gate.reason,
+                "route_expected_turn_pending": route_gate.expected_turn_pending,
+            }
+
+        if route_suppressed:
+            logger.info(
+                "approach_route_veto user=%s callsign=%s icao=%s destination=%s history_days=%d reason=%s",
+                uid,
+                route_gate.callsign if route_gate else ac.callsign,
+                ac.icao24,
+                route_gate.destination_code if route_gate else "",
+                route_gate.history_days if route_gate else 0,
+                route_gate.reason if route_gate else "route gate",
+            )
 
         if old and old.get("message_id") and old.get("active") and (pred.already_passed or pred.state == "Passed"):
             await send_or_update_approach(
@@ -367,14 +422,14 @@ async def _match_user_aircraft(user: dict, aircraft_list: list, results_by_provi
                     "projected_closest_km": pred.projected_closest_km,
                     "observed_closest_km": observed_closest,
                     "cancel_confirmation_count": 0,
+                    **route_state,
                 }, "$unset": {"candidate_projected_closest_km": "", "candidate_state": ""}},
             )
             logger.info("approach_passed user=%s icao=%s observed_distance=%.2f", uid, ac.icao24, observed_closest)
             continue
 
         if not qualifies:
-            active = bool(old and old.get("message_id") and old.get("active"))
-            candidate = bool(active and should_cancel_active_alert(pred, stable_previous_cpa, radius))
+            candidate = bool(active and (route_suppressed or should_cancel_active_alert(pred, stable_previous_cpa, radius)))
             confirmed, confirmation_count = advance_cancellation_confirmation(
                 int((old or {}).get("cancel_confirmation_count") or 0), candidate
             )
@@ -395,15 +450,17 @@ async def _match_user_aircraft(user: dict, aircraft_list: list, results_by_provi
                         "projected_closest_km": pred.projected_closest_km,
                         "observed_closest_km": observed_closest,
                         "cancel_confirmation_count": 0,
+                        **route_state,
                     }, "$unset": {"candidate_projected_closest_km": "", "candidate_state": ""}},
                 )
                 logger.info(
-                    "approach_alert_cancelled user=%s icao=%s old_cpa=%s new_cpa=%.2f confirmations=%d",
+                    "approach_alert_cancelled user=%s icao=%s old_cpa=%s new_cpa=%.2f confirmations=%d route_veto=%s",
                     uid,
                     ac.icao24,
                     stable_previous_cpa,
                     pred.projected_closest_km,
                     confirmation_count,
+                    route_suppressed,
                 )
             elif active:
                 await states.update_one(
@@ -416,16 +473,18 @@ async def _match_user_aircraft(user: dict, aircraft_list: list, results_by_provi
                         "candidate_state": pred.state,
                         "candidate_confidence": pred.confidence,
                         "candidate_time_to_cpa_s": pred.time_to_cpa_s,
+                        **route_state,
                     }},
                 )
                 logger.info(
-                    "approach_alert_held user=%s icao=%s stable_cpa=%s candidate_cpa=%.2f state=%s confirmation=%d/3",
+                    "approach_alert_held user=%s icao=%s stable_cpa=%s candidate_cpa=%.2f state=%s confirmation=%d/3 route_veto=%s",
                     uid,
                     ac.icao24,
                     stable_previous_cpa,
                     pred.projected_closest_km,
                     pred.state,
                     confirmation_count,
+                    route_suppressed,
                 )
             continue
 
@@ -478,6 +537,7 @@ async def _match_user_aircraft(user: dict, aircraft_list: list, results_by_provi
                 "cancel_confirmation_count": 0,
                 "updated_at": datetime.now(timezone.utc),
                 "expires_at": datetime.now(timezone.utc) + timedelta(hours=2),
+                **route_state,
             }, "$unset": {
                 "candidate_projected_closest_km": "",
                 "candidate_state": "",
