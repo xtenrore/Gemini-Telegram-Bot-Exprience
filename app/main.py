@@ -32,12 +32,22 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info("Integrated ADS-B worker enabled: interval=%ds", settings.poll_interval_seconds)
+    first_cycle_confirmed = False
     while True:
         cycle_started = time.monotonic()
         try:
             # get_db raises until the Atlas connection has been established.
             get_db()
             await run_monitor_cycle()
+            if not first_cycle_confirmed:
+                stats = get_cycle_stats()
+                if int(stats.get("total_cycles", 0) or 0) > 0:
+                    logger.info(
+                        "Integrated ADS-B worker first cycle completed: total_cycles=%s duration_ms=%s",
+                        stats.get("total_cycles"),
+                        stats.get("last_cycle_duration_ms"),
+                    )
+                    first_cycle_confirmed = True
         except asyncio.CancelledError:
             raise
         except RuntimeError:
