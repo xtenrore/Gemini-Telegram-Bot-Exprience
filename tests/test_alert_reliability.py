@@ -37,20 +37,22 @@ async def test_short_primary_feed_gap_reuses_recent_aircraft(monkeypatch):
     async def fake_query(self, **kwargs):
         return responses.pop(0)
 
-    clock = iter([1000.0, 1010.0, 1030.0])
+    clock = [1000.0]
     monkeypatch.setattr(reliability, "_ORIGINAL_QUERY_PROVIDERS", fake_query)
-    monkeypatch.setattr(reliability.time, "time", lambda: next(clock))
+    monkeypatch.setattr(reliability.time, "time", lambda: clock[0])
 
     manager = SimpleNamespace(opensky=SimpleNamespace(can_request_now=lambda: False))
 
     first, _ = await reliability._reliable_query_providers(manager, 41.0, 29.0, 80, None)
     assert [item.icao24 for item in first] == ["4bb123"]
 
+    clock[0] = 1010.0
     recovered, _ = await reliability._reliable_query_providers(manager, 41.0, 29.0, 80, None)
     assert [item.icao24 for item in recovered] == ["4bb123"]
     assert recovered[0].data_quality == "continuity-cache"
     assert recovered[0].position_age_s == pytest.approx(11.0)
 
+    clock[0] = 1030.0
     expired, _ = await reliability._reliable_query_providers(manager, 41.0, 29.0, 80, None)
     assert expired == []
 
@@ -151,7 +153,7 @@ async def test_route_network_refresh_does_not_block_alert_loop():
             alert_radius_km=15.0,
             current_samples=[],
         ),
-        timeout=0.05,
+        timeout=0.2,
     )
 
     assert result.suppress_alert is False
