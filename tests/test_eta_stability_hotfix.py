@@ -61,6 +61,41 @@ def test_confident_clear_miss_can_invalidate_eta_before_distance_turns_outward()
     assert should_cancel_active_alert(pred, 5.8, 8.0) is True
 
 
+def test_low_confidence_extreme_miss_can_retire_obsolete_eta_after_confirmation():
+    pred = SimpleNamespace(
+        stale=False,
+        already_passed=False,
+        state="Will not approach",
+        enters_alert_radius=False,
+        projected_closest_km=47.0,
+        distance_trend_km_s=-0.01,
+        turning_away=False,
+        confidence_score=0.42,
+    )
+    candidate = should_cancel_active_alert(pred, 6.9, 8.0)
+    assert candidate is True
+    confirmed, count = advance_cancellation_confirmation(0, candidate)
+    assert not confirmed and count == 1
+    confirmed, count = advance_cancellation_confirmation(count, candidate)
+    assert not confirmed and count == 2
+    confirmed, count = advance_cancellation_confirmation(count, candidate)
+    assert confirmed and count == 3
+
+
+def test_low_confidence_non_extreme_miss_still_holds_eta():
+    pred = SimpleNamespace(
+        stale=False,
+        already_passed=False,
+        state="Will not approach",
+        enters_alert_radius=False,
+        projected_closest_km=20.0,
+        distance_trend_km_s=-0.01,
+        turning_away=False,
+        confidence_score=0.42,
+    )
+    assert should_cancel_active_alert(pred, 6.9, 8.0) is False
+
+
 def test_small_miss_without_outward_motion_does_not_cancel_eta():
     pred = SimpleNamespace(
         stale=False,
