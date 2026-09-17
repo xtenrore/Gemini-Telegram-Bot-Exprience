@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+CANCELLATION_CONFIRMATIONS_REQUIRED = 3
+
 
 @dataclass(frozen=True)
 class LifecycleDecision:
@@ -12,18 +14,12 @@ class LifecycleDecision:
 
 
 def decide_lifecycle(prediction, best_start_s: float | None = None, best_end_s: float | None = None) -> LifecycleDecision:
-    """Map a trajectory prediction to the spotting alert lifecycle.
-
-    Candidate remains silent. Prepare creates the first live message; later states
-    edit that same message. Passed is reserved for a previously-qualified pass.
-    """
     if getattr(prediction, "stale", False):
         return LifecycleDecision("uncertain", False, "ADS-B position is stale")
     if getattr(prediction, "already_passed", False) or getattr(prediction, "state", "") == "Passed":
         return LifecycleDecision("passed", True, "closest approach has occurred")
     if not getattr(prediction, "enters_alert_radius", False):
         return LifecycleDecision("detection", False, "projected CPA remains outside alert radius")
-
     cpa = getattr(prediction, "time_to_cpa_s", None)
     start = best_start_s if best_start_s is not None else (max(0.0, cpa - 25.0) if cpa is not None else None)
     end = best_end_s if best_end_s is not None else ((cpa + 10.0) if cpa is not None else None)
@@ -39,19 +35,20 @@ def decide_lifecycle(prediction, best_start_s: float | None = None, best_end_s: 
 
 
 def prediction_changed(previous_cpa_km: float | None, new_cpa_km: float, alert_radius_km: float) -> bool:
+    """Flag only a material recalculation, not ordinary CPA jitter."""
     if previous_cpa_km is None:
         return False
-    delta = abs(float(new_cpa_km) - float(previous_cpa_km))
-    return delta >= max(1.5, alert_radius_km * 0.20)
+    previous = float(previous_cpa_km)
+    delta = abs(float(new_cpa_km) - previous)
+    threshold = max(3.0, float(alert_radius_km) * 0.35, abs(previous) * 0.50)
+    return delta >= threshold
 
 
 def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_radius_km: float) -> bool:
-    """Return True only when an active approach has genuinely become invalid.
+    """Return whether *this cycle* contains credible cancellation evidence.
 
-    A transient confidence drop, stale ADS-B sample, or tiny CPA wobble must not
-    cancel an alert that still projects inside the user's radius.  Cancellation
-    requires a meaningful move outside a hysteresis band plus evidence that the
-    trajectory has actually changed/moved away.
+    The caller still has to observe this evidence for multiple consecutive cycles.
+    One provider spike or one heading wobble therefore cannot cancel a live alert.
     """
     if getattr(prediction, "stale", False):
         return False
@@ -60,11 +57,31 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
     if getattr(prediction, "enters_alert_radius", False):
         return False
 
-    new_cpa = float(getattr(prediction, "projected_closest_km", alert_radius_km))
-    hysteresis_km = max(1.5, float(alert_radius_km) * 0.15)
-    if new_cpa <= float(alert_radius_km) + hysteresis_km:
+    radius = float(alert_radius_km)
+    new_cpa = float(getattr(prediction, "projected_closest_km", radius))
+    hysteresis_km = max(2.0, radius * 0.18)
+    if new_cpa <= radius + hysteresis_km:
         return False
 
-    state = str(getattr(prediction, "state", ""))
-    decisive_state = state in {"Moving away", "Will not approach", "Turning away", "Trajectory changed"}
-    return decisive_state or prediction_changed(previous_cpa_km, new_cpa, alert_radius_km)
+    previous = float(previous_cpa_km) if previous_cpa_km is not None else None
+    materially_worse = previous is None or new_cpa - previous >= max(2.5, radius * 0.22)
+    if not materially_worse:
+        return False
+
+    trend = getattr(prediction, "distance_trend_km_s", None)
+    moving_away = trend is not None and float(trend) >= 0.004
+    turning_away = bool(getattr(prediction, "turning_away", False)) or str(getattr(prediction, "state", "")) == "Turning away"
+    confidence_score = float(getattr(prediction, "confidence_score", 1.0) if getattr(prediction, "confidence_score", None) is not None else 1.0)
+
+    # "Will not approach" by itself is not evidence: it can be caused by one bad
+    # heading sample. Require observed outward motion or a sustained turn, and do
+    # not let an uncertain prediction invalidate a previously-good alert.
+    return (moving_away or turning_away) and confidence_score >= 0.36
+
+
+def advance_cancellation_confirmation(previous_count: int, candidate: bool, *, required: int = CANCELLATION_CONFIRMATIONS_REQUIRED) -> tuple[bool, int]:
+    """Require N consecutive credible cycles before cancelling an active alert."""
+    if not candidate:
+        return False, 0
+    count = max(0, int(previous_count)) + 1
+    return count >= max(1, int(required)), count
