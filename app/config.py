@@ -36,9 +36,11 @@ class Settings(BaseSettings):
     opensky_credentials_json: str = ""
     api_keys_dir: str = "api"
 
-    # Flight-number route intelligence. The default lookup is free/public and
-    # returns a plausibility flag plus route airports for an observed callsign.
+    # Flight-number route intelligence. The bulk route endpoint is preferred;
+    # the single-route endpoint is an official fallback that also calculates
+    # whether the route is plausible for the aircraft's live position.
     route_lookup_url: str = "https://api.adsb.lol/api/0/routeset"
+    route_lookup_single_url: str = "https://api.adsb.lol/api/0/route"
     route_lookup_cache_seconds: int = 1200
     route_history_days: int = 3
     route_sample_interval_seconds: int = 30
