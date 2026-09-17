@@ -9,6 +9,10 @@ import re
 # Users select one or more categories; matching expands to these codes.
 
 AIRCRAFT_CATEGORIES: dict[str, list[str]] = {
+    # Sentinel category. The monitor recognises this category name and bypasses
+    # aircraft-type filtering so even aircraft with an unknown/missing type can
+    # still be evaluated by the deterministic CPA/pass logic.
+    "All Aircraft": ["ALL"],
     "Military": [
         "C17",   # Globemaster III
         "KC35",  # KC-135 Stratotanker (ICAO: K35R)
@@ -134,6 +138,7 @@ AIRCRAFT_CATEGORIES: dict[str, list[str]] = {
 
 # ── Category display info ────────────────────────────────────────────────────
 CATEGORY_EMOJIS: dict[str, str] = {
+    "All Aircraft": "🌐",
     "Military": "🛩️",
     "Large Airliners": "✈️",
     "Cargo": "📦",
@@ -146,6 +151,7 @@ CATEGORY_EMOJIS: dict[str, str] = {
 
 # Ordered list for consistent UI display
 CATEGORY_ORDER: list[str] = [
+    "All Aircraft",
     "Military",
     "Large Airliners",
     "Cargo",
