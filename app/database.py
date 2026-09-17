@@ -48,7 +48,7 @@ async def connect_db(max_retries: int = 5, retry_delay: float = 2.0, timeout_ms:
                 maxPoolSize=5,
                 minPoolSize=0,
                 maxIdleTimeMS=60000,
-                appname="plane-spotting-intelligence-v3.4",
+                appname="plane-spotting-intelligence-v3.6",
             )
             _db = _client[settings.database_name]
             await _client.admin.command("ping")
@@ -95,11 +95,18 @@ def ai_usage_col() -> AsyncIOMotorCollection: return get_db()["ai_usage"]
 def feedback_col() -> AsyncIOMotorCollection: return get_db()["feedback"]
 def camera_profiles_col() -> AsyncIOMotorCollection: return get_db()["camera_profiles"]
 def system_status_col() -> AsyncIOMotorCollection: return get_db()["system_status"]
+def admin_audit_col() -> AsyncIOMotorCollection: return get_db()["admin_audit"]
 
 
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     logger.info("Ensuring database indexes …")
     await db["users"].create_index("user_id", unique=True)
+    # v3.6 admin panel: anchored @username search, priority ordering, and admin
+    # lookup all remain index-backed as the user table grows.
+    await db["users"].create_index("username")
+    await db["users"].create_index("last_active")
+    await db["users"].create_index("is_admin")
+    await db["users"].create_index("admin_controls.priority_enabled")
     await db["locations"].create_index("user_id")
     await db["locations"].create_index("geohash")
     await db["preferences"].create_index("user_id", unique=True)
@@ -122,4 +129,6 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["flight_route_samples"].create_index("expires_at", expireAfterSeconds=0)
     await db["flight_route_samples"].create_index("updated_at")
     await db["system_status"].create_index("updated_at")
+    await db["admin_audit"].create_index("created_at")
+    await db["admin_audit"].create_index("target_user_id")
     logger.info("Database indexes ready.")
