@@ -3,192 +3,101 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aircraft Alert Bot - Admin Dashboard</title>
+    <title>Plane? v3.6 — Aircraft Alert Bot Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/admin/admin.css">
+    <link rel="stylesheet" href="/admin/v36.css">
 </head>
 <body>
-    <!-- Header -->
+    <div class="login-gate" id="loginGate">
+        <div class="card login-card">
+            <div class="header-left" style="margin-bottom:14px">
+                <span class="header-icon">✈</span>
+                <div><h2>Plane? Admin</h2><span class="header-badge">v3.6</span></div>
+            </div>
+            <p>Enter the ADMIN_PASSWORD configured for the production service. Delegated admins can open their personal admin link instead.</p>
+            <div class="login-row">
+                <input class="input" id="adminPassword" type="password" autocomplete="current-password" placeholder="Admin password">
+                <button class="btn btn-primary" id="loginButton">Sign in</button>
+            </div>
+            <p id="loginError" style="color:var(--danger);margin:12px 0 0"></p>
+        </div>
+    </div>
+
     <header class="header">
         <div class="header-left">
-            <span class="header-icon">&#9992;</span>
-            <h1>Aircraft Alert Bot</h1>
-            <span class="header-badge">Admin</span>
+            <span class="header-icon">✈</span>
+            <h1>Plane?</h1>
+            <span class="header-badge">Admin v3.6</span>
+            <span class="session-pill" id="sessionPill">Authenticating…</span>
         </div>
         <div class="header-right">
             <span class="status-dot" id="statusDot"></span>
-            <span class="status-text" id="statusText">Connecting...</span>
+            <span class="status-text" id="statusText">Connecting…</span>
             <span class="refresh-timer" id="refreshTimer">30s</span>
+            <button class="btn" id="logoutButton">Lock</button>
         </div>
     </header>
 
-    <!-- Main Content -->
     <main class="dashboard">
+        <section class="cards-row admin-stat-row">
+            <div class="card stat-card"><div class="stat-icon">👥</div><div><div class="stat-value" id="totalUsers">-</div><div class="stat-label">Users</div></div></div>
+            <div class="card stat-card"><div class="stat-icon">⚡</div><div><div class="stat-value" id="priorityUsers">-</div><div class="stat-label">Priority</div></div></div>
+            <div class="card stat-card"><div class="stat-icon">🛡</div><div><div class="stat-value" id="delegatedAdmins">-</div><div class="stat-label">Delegated Admins</div></div></div>
+            <div class="card stat-card"><div class="stat-icon">🔕</div><div><div class="stat-value" id="pausedUsers">-</div><div class="stat-label">Notifications Paused</div></div></div>
+            <div class="card stat-card"><div class="stat-icon">⏱</div><div><div class="stat-value" id="customDelayUsers">-</div><div class="stat-label">Custom Delay</div></div></div>
+            <div class="card stat-card"><div class="stat-icon">🔄</div><div><div class="stat-value" id="lastCycle">-</div><div class="stat-label">Last Cycle</div></div></div>
+        </section>
 
-        <!-- Overview Cards Row -->
-        <section class="cards-row" id="overviewCards">
-            <div class="card stat-card">
-                <div class="stat-icon">&#128101;</div>
-                <div class="stat-body">
-                    <div class="stat-value" id="totalUsers">-</div>
-                    <div class="stat-label">Total Users</div>
+        <section class="section">
+            <h2 class="section-title">User Control Center <span class="inline-note">search by @username, name, or Telegram ID</span></h2>
+            <div class="card">
+                <div class="admin-toolbar">
+                    <div class="search-wrap"><span class="search-icon">⌕</span><input class="input" id="userSearch" placeholder="Search @username, name, or ID"></div>
+                    <select class="select" id="pageSize"><option value="25">25 users</option><option value="50">50 users</option><option value="100">100 users</option></select>
+                    <button class="btn" id="refreshUsers">Refresh users</button>
                 </div>
-            </div>
-            <div class="card stat-card">
-                <div class="stat-icon">&#9989;</div>
-                <div class="stat-body">
-                    <div class="stat-value" id="activeUsers">-</div>
-                    <div class="stat-label">Active Users</div>
+                <div class="helper">Priority users are processed first and their shared ADS-B region stays on the 5-second hot cadence. Delay Time is the minimum user-evaluation delay; shared provider requests remain deduplicated so one fast user does not multiply API traffic.</div>
+                <div class="table-wrapper">
+                    <table class="data-table control-table">
+                        <thead><tr><th>User</th><th>ID</th><th>Priority</th><th>Delay</th><th>Radius</th><th>Monitoring</th><th>Notify</th><th>Admin</th><th>Actions</th></tr></thead>
+                        <tbody id="usersBody"><tr><td colspan="9" class="loading">Loading users…</td></tr></tbody>
+                    </table>
                 </div>
-            </div>
-            <div class="card stat-card">
-                <div class="stat-icon">&#128276;</div>
-                <div class="stat-body">
-                    <div class="stat-value" id="totalNotifications">-</div>
-                    <div class="stat-label">Notifications Sent</div>
-                </div>
-            </div>
-            <div class="card stat-card">
-                <div class="stat-icon">&#9201;</div>
-                <div class="stat-body">
-                    <div class="stat-value" id="uptime">-</div>
-                    <div class="stat-label">Uptime</div>
-                </div>
-            </div>
-            <div class="card stat-card">
-                <div class="stat-icon">&#128187;</div>
-                <div class="stat-body">
-                    <div class="stat-value" id="memoryUsage">-</div>
-                    <div class="stat-label">Memory</div>
-                </div>
-            </div>
-            <div class="card stat-card">
-                <div class="stat-icon">&#128260;</div>
-                <div class="stat-body">
-                    <div class="stat-value" id="lastCycle">-</div>
-                    <div class="stat-label">Last Cycle</div>
-                </div>
+                <div class="pagination"><span id="usersPageInfo">-</span><div class="action-stack"><button class="btn" id="prevUsers">Previous</button><button class="btn" id="nextUsers">Next</button></div></div>
             </div>
         </section>
 
-        <!-- Providers Section -->
         <section class="section">
-            <h2 class="section-title">&#128225; Data Providers</h2>
-            <div class="table-wrapper card">
-                <table class="data-table" id="providersTable">
-                    <thead>
-                        <tr>
-                            <th>Provider</th>
-                            <th>Type</th>
-                            <th>Requests</th>
-                            <th>Errors</th>
-                            <th>Last Success</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="providersBody">
-                        <tr><td colspan="6" class="loading">Loading...</td></tr>
-                    </tbody>
-                </table>
+            <h2 class="section-title">Operations</h2>
+            <div class="system-grid">
+                <div class="card system-card"><h3>Worker</h3><div id="systemWorker" class="system-details">Loading…</div></div>
+                <div class="card system-card"><h3>Configuration</h3><div id="systemConfig" class="system-details">Loading…</div></div>
+                <div class="card system-card"><h3>Database</h3><div id="systemDatabase" class="system-details">Loading…</div></div>
+                <div class="card system-card"><h3>Runtime</h3><div id="systemPlatform" class="system-details">Loading…</div></div>
             </div>
         </section>
 
-        <!-- API Keys Section -->
         <section class="section">
-            <h2 class="section-title">&#128273; OpenSky API Keys</h2>
-            <div class="table-wrapper card">
-                <table class="data-table" id="keysTable">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Username</th>
-                            <th>Source File</th>
-                            <th>Requests</th>
-                            <th>Remaining</th>
-                            <th>Rate Limits</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody id="keysBody">
-                        <tr><td colspan="7" class="loading">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+            <h2 class="section-title">Data Providers</h2>
+            <div class="table-wrapper card"><table class="data-table"><thead><tr><th>Provider</th><th>Type</th><th>Requests</th><th>Errors</th><th>Last Success</th><th>Status</th></tr></thead><tbody id="providersBody"><tr><td colspan="6" class="loading">Loading…</td></tr></tbody></table></div>
         </section>
 
-        <!-- Users Section -->
         <section class="section">
-            <h2 class="section-title">&#128101; Users</h2>
-            <div class="table-wrapper card">
-                <table class="data-table" id="usersTable">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Name</th>
-                            <th>Location</th>
-                            <th>Categories</th>
-                            <th>Custom Types</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="usersBody">
-                        <tr><td colspan="7" class="loading">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+            <h2 class="section-title">Recent Notifications</h2>
+            <div class="table-wrapper card"><table class="data-table"><thead><tr><th>User</th><th>ICAO</th><th>Aircraft</th><th>Distance</th><th>Sent</th></tr></thead><tbody id="notificationsBody"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody></table></div>
         </section>
 
-        <!-- Notifications Section -->
         <section class="section">
-            <h2 class="section-title">&#128276; Recent Notifications</h2>
-            <div class="table-wrapper card">
-                <table class="data-table" id="notificationsTable">
-                    <thead>
-                        <tr>
-                            <th>User ID</th>
-                            <th>Aircraft ICAO</th>
-                            <th>Notified At</th>
-                            <th>Cooldown Until</th>
-                        </tr>
-                    </thead>
-                    <tbody id="notificationsBody">
-                        <tr><td colspan="4" class="loading">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
-        <!-- System Section -->
-        <section class="section">
-            <h2 class="section-title">&#9881; System</h2>
-            <div class="system-grid" id="systemGrid">
-                <div class="card system-card">
-                    <h3>Worker</h3>
-                    <div id="systemWorker" class="system-details">Loading...</div>
-                </div>
-                <div class="card system-card">
-                    <h3>Database</h3>
-                    <div id="systemDatabase" class="system-details">Loading...</div>
-                </div>
-                <div class="card system-card">
-                    <h3>Configuration</h3>
-                    <div id="systemConfig" class="system-details">Loading...</div>
-                </div>
-                <div class="card system-card">
-                    <h3>Platform</h3>
-                    <div id="systemPlatform" class="system-details">Loading...</div>
-                </div>
-            </div>
+            <h2 class="section-title">Admin Audit Trail</h2>
+            <div class="table-wrapper card"><table class="data-table"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Details</th></tr></thead><tbody id="auditBody"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody></table></div>
         </section>
     </main>
 
-    <footer class="footer">
-        <p>Aircraft Alert Bot Admin Dashboard &mdash; Auto-refreshes every 30 seconds</p>
-    </footer>
-
-    <script src="/admin/admin.js"></script>
+    <footer class="footer"><p>Plane? v3.6 Admin — auto-refreshes operational data every 30 seconds</p></footer>
+    <div class="toast" id="toast"></div>
+    <script src="/admin/v36.js"></script>
 </body>
 </html>

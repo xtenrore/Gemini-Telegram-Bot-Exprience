@@ -1,0 +1,97 @@
+/* Plane? v3.6 admin controls — layered on top of admin.css */
+:root {
+    --panel: rgba(15, 23, 42, .92);
+    --field: rgba(2, 6, 23, .72);
+}
+
+.login-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    background: rgba(2, 6, 23, .92);
+    backdrop-filter: blur(16px);
+}
+.login-gate.hidden { display: none; }
+.login-card { width: min(440px, calc(100vw - 32px)); padding: 28px; }
+.login-card h2 { margin-bottom: 8px; }
+.login-card p { color: var(--text-secondary); font-size: 13px; margin-bottom: 18px; }
+.login-row { display: flex; gap: 10px; }
+
+.admin-toolbar {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) auto auto;
+    gap: 10px;
+    padding: 14px;
+    align-items: center;
+}
+.input, .select {
+    width: 100%;
+    min-height: 38px;
+    padding: 8px 10px;
+    color: var(--text-primary);
+    background: var(--field);
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    font: inherit;
+    outline: none;
+}
+.input:focus, .select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.input.compact { width: 82px; min-height: 32px; padding: 5px 7px; }
+.search-wrap { position: relative; }
+.search-wrap .input { padding-left: 34px; }
+.search-icon { position: absolute; left: 11px; top: 9px; color: var(--text-muted); }
+
+.control-table td { vertical-align: middle; }
+.user-cell { display: flex; align-items: center; gap: 10px; min-width: 190px; }
+.avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center;
+    background: rgba(99,102,241,.16); color: var(--accent-light); font-weight: 700;
+}
+.user-meta strong { display: block; color: var(--text-primary); font-size: 13px; }
+.user-meta small { color: var(--text-muted); }
+.switch { position: relative; width: 38px; height: 22px; display: inline-block; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: #334155; cursor: pointer; transition: .18s; }
+.switch span:before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%; background: white; transition: .18s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span:before { transform: translateX(16px); }
+.switch input:disabled + span { opacity: .45; cursor: not-allowed; }
+
+.action-stack { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-primary:hover { color: white; background: var(--accent-light); }
+.btn-success { border-color: rgba(34,197,94,.35); color: var(--success); }
+.btn-warning { border-color: rgba(245,158,11,.35); color: var(--warning); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.helper {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 0 14px 14px;
+}
+.pagination { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-top: 1px solid var(--border-color); }
+.pagination span { color: var(--text-secondary); font-size: 12px; }
+
+.admin-stat-row { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.inline-note { color: var(--text-muted); font-size: 12px; font-weight: 400; margin-left: 8px; }
+.session-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border-color); color: var(--text-secondary); }
+.session-pill.root { color: var(--success); border-color: rgba(34,197,94,.3); }
+.session-pill.delegated { color: var(--warning); border-color: rgba(245,158,11,.3); }
+
+.toast {
+    position: fixed; right: 18px; bottom: 18px; z-index: 1200;
+    max-width: 420px; padding: 12px 14px; border-radius: 10px;
+    background: #111827; border: 1px solid var(--border-color); box-shadow: var(--shadow);
+    color: var(--text-primary); opacity: 0; transform: translateY(8px); pointer-events: none; transition: .2s;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.error { border-color: rgba(239,68,68,.5); }
+.audit-details { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 900px) {
+    .admin-toolbar { grid-template-columns: 1fr; }
+    .control-table { min-width: 1050px; }
+}

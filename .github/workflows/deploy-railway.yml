@@ -57,8 +57,6 @@ jobs:
             exit 0
           fi
 
-          # Compatibility for older Plane? setups where a project token was
-          # stored under the RAILWAY_API_TOKEN GitHub-secret name.
           echo "Railway API-token link was rejected; trying project-token compatibility mode."
           echo "RAILWAY_TOKEN=$RAILWAY_API_TOKEN" >> "$GITHUB_ENV"
           echo "RAILWAY_API_TOKEN=" >> "$GITHUB_ENV"
@@ -67,11 +65,9 @@ jobs:
         shell: sh
         run: |
           set -eu
-          # Do not pass a trailing '.' here. Current Railway CLI versions have
-          # a path-prefix bug for relative path arguments ("prefix not found").
           railway up \
             --project "$PROJECT_ID" \
             --service "$SERVICE_ID" \
             --environment "$ENVIRONMENT_ID" \
             --ci \
-            --message "Plane? v3.5 ${DEPLOY_SHA}"
+            --message "Plane? v3.6 ${DEPLOY_SHA}"
