@@ -17,6 +17,7 @@ from telegram.ext import Application
 from app.admin.auth import DelegatedAdminMiddleware
 from app.admin.routes import router as admin_router
 from app.admin.v36_routes import router as admin_v36_router
+from app.agy_console import register_agy_console_handlers
 from app.aircraft.api_keys import opensky_key_manager
 from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
@@ -103,6 +104,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if bot_token and bot_token != "your_bot_token_from_botfather":
         try:
             telegram_app = Application.builder().token(bot_token).build()
+            # Private owner-only AGY bridge runs in an earlier handler group so
+            # OAuth codes and interactive AGY input are never mistaken for
+            # ordinary Plane Alerts setup text.
+            register_agy_console_handlers(telegram_app)
             register_handlers(telegram_app)
             register_photography_handlers(telegram_app)
             await telegram_app.initialize()
@@ -119,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         BotCommand("photo", "Get live best-shot camera settings"),
                         BotCommand("conditions", "Show weather / sun / haze conditions"),
                         BotCommand("spotting", "Open Spotting Mode"),
+                        BotCommand("agy", "Open private Antigravity console"),
                         BotCommand("help", "Show all commands"),
                     ]
                 )
