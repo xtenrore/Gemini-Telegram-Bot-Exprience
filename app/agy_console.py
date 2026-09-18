@@ -1,7 +1,7 @@
 """Telegram bridge for the private Plane Alerts Antigravity worker.
 
 Only the sole registered Telegram user (or ADMIN_TELEGRAM_ID when configured)
-may open the bridge.  Text entered while the bridge is active is forwarded to
+may open the bridge. Text entered while the bridge is active is forwarded to
 AGY stdin; it is never executed as a host shell command.
 """
 from __future__ import annotations
@@ -13,7 +13,14 @@ from typing import Any
 
 import httpx
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from app.config import settings
 from app.database import users_col
@@ -161,7 +168,8 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Goal loop enabled: {enabled}\n"
                 f"Goal running: {running}\n"
                 f"Next run: {next_run}\n"
-                "Paid credit overages: OFF"
+                "Paid credit overages: OFF\n"
+                "Model: Gemini 3.1 Pro High"
             )
         except Exception as exc:
             logger.exception("AGY status failed")
@@ -194,7 +202,6 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Use /agy stop to disconnect. The Google sign-in URL/code prompts will appear here."
     )
 
-    # Send any output already produced by startup immediately, then continue.
     events = data.get("events", [])
     lines = [str(event.get("text", "")) for event in events if isinstance(event, dict)]
     session.cursor = int(data.get("cursor", 0) or 0)
@@ -220,3 +227,17 @@ async def handle_agy_text_if_active(update: Update) -> bool:
         logger.exception("Could not forward AGY console input")
         await message.reply_text(f"AGY input failed ({type(exc).__name__}). The console bridge will keep retrying output.")
     return True
+
+
+async def _agy_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if await handle_agy_text_if_active(update):
+        # Prevent the normal Plane Alerts free-text handler from interpreting an
+        # OAuth code or AGY prompt as an ICAO/radius message.
+        raise ApplicationHandlerStop
+
+
+def register_agy_console_handlers(app: Application) -> None:
+    """Register the private console ahead of normal command/text handlers."""
+    app.add_handler(CommandHandler("agy", cmd_agy), group=-20)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _agy_text_handler), group=-20)
