@@ -80,3 +80,27 @@ def test_processing_delay_is_measured_from_evaluation_start_not_completion(monke
     # to start=100, so at completion the user is already due again.
     v36._record_users_processed([user], 100.0)
     assert v36._is_due(user, 111.0) is True
+
+
+def test_later_region_becomes_due_while_earlier_region_is_busy(monkeypatch):
+    monkeypatch.setattr(v36, "_last_user_processed_mono", {42: 100.0})
+    user = {
+        "user_id": 42,
+        "admin_control": {"delay_seconds": 5},
+        "location": {},
+    }
+    region = v36.v35.SharedPollRegion(
+        key="later-region",
+        users=[user],
+        latitude=0.0,
+        longitude=0.0,
+        radius_nm=70,
+    )
+
+    due_early, deferred_early = v36._collect_due_users(region, 104.0)
+    due_later, deferred_later = v36._collect_due_users(region, 106.0)
+
+    assert due_early == []
+    assert deferred_early == 1
+    assert [item["user_id"] for item in due_later] == [42]
+    assert deferred_later == 0
