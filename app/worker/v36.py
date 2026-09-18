@@ -95,6 +95,29 @@ def _record_users_processed(users: list[dict[str, Any]], evaluation_started_mono
         _last_user_processed_mono[int(user["user_id"])] = evaluation_started_mono
 
 
+def _collect_due_users(
+    region: v35.SharedPollRegion,
+    now_mono: float,
+) -> tuple[list[dict[str, Any]], int]:
+    """Resolve due users using a timestamp sampled for this specific region.
+
+    A previous region may spend several seconds waiting on a public ADS-B feed.
+    Reusing a cycle-start timestamp would incorrectly defer users in later
+    regions even though their delay elapsed while the earlier region was busy.
+    """
+    due_users: list[dict[str, Any]] = []
+    deferred = 0
+    for user in region.users:
+        control = _control(user)
+        if not control["notifications_enabled"]:
+            continue
+        if _is_due(user, now_mono):
+            due_users.append(user)
+        else:
+            deferred += 1
+    return due_users, deferred
+
+
 async def _record_v36_metrics(
     *,
     region_count: int,
@@ -151,7 +174,6 @@ async def _monitor_cycle_v36() -> None:
     regions.sort(key=_region_order)
     v35._shared_poller.prune({region.key for region in regions})
 
-    now_mono = time.monotonic()
     notifications = 0
     provider_queries = 0
     cache_hits = 0
@@ -163,15 +185,11 @@ async def _monitor_cycle_v36() -> None:
     stagger = len(regions) > 1
 
     for region in regions:
-        due_users: list[dict[str, Any]] = []
-        for user in region.users:
-            control = _control(user)
-            if not control["notifications_enabled"]:
-                continue
-            if _is_due(user, now_mono):
-                due_users.append(user)
-            else:
-                deferred_users += 1
+        # Important: sample monotonic time per region. A slow earlier provider
+        # must not make a later region use a stale due/defer decision.
+        region_now_mono = time.monotonic()
+        due_users, region_deferred = _collect_due_users(region, region_now_mono)
+        deferred_users += region_deferred
 
         if not due_users:
             continue
@@ -179,7 +197,7 @@ async def _monitor_cycle_v36() -> None:
         due_users.sort(key=_user_order)
         region_has_priority = any(_priority(user) for user in due_users)
         if region_has_priority:
-            _promote_priority_region(region.key, now_mono)
+            _promote_priority_region(region.key, region_now_mono)
 
         active_region = v35.SharedPollRegion(
             key=region.key,
@@ -189,7 +207,7 @@ async def _monitor_cycle_v36() -> None:
             radius_nm=region.radius_nm,
         )
 
-        evaluation_started_mono = time.monotonic()
+        evaluation_started_mono = region_now_mono
         try:
             sent, poll = await v35._process_shared_region(
                 active_region,
