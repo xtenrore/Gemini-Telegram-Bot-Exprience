@@ -1,9 +1,10 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 import app.intelligence.route_guard_v2 as guard
-from app.intelligence.route_history import AirportInfo, FlightRouteInfo, RouteHistoryService
+from app.intelligence.route_history import AirportInfo, FlightRouteInfo, RouteGateResult, RouteHistoryService
 
 
 @pytest.mark.asyncio
@@ -44,6 +45,68 @@ async def test_route_evaluation_never_waits_for_network_refresh(monkeypatch):
 
     assert scheduled == ["THY1017"]
     assert result.callsign == "THY1017"
+    assert result.suppress_alert is True
+    assert "pending in background" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_route_history_observation_returns_without_waiting_for_database(monkeypatch):
+    service = RouteHistoryService()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_observe(self, ac, *, now=None):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(guard, "_ORIGINAL_OBSERVE", slow_observe)
+    ac = SimpleNamespace(callsign="THY1017")
+
+    await asyncio.wait_for(guard.observe_nonblocking(service, ac, now=100.0), timeout=0.05)
+    await asyncio.wait_for(started.wait(), timeout=0.05)
+    assert "THY1017" in service._route_guard_v2_observe_tasks
+
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_history_reads_are_cached_for_live_candidate(monkeypatch):
+    service = RouteHistoryService()
+    calls = 0
+
+    async def history(key):
+        nonlocal calls
+        calls += 1
+        return []
+
+    service._historical_paths = history
+    assert await guard._historical_paths_cached(service, "THY1017") == []
+    assert await guard._historical_paths_cached(service, "THY1017") == []
+    assert calls == 1
+
+
+def test_route_pending_grace_is_bounded(monkeypatch):
+    service = RouteHistoryService()
+    result = RouteGateResult(False, "THY1017", "no route")
+    times = iter([100.0, 103.0, 107.0])
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(times))
+
+    first = guard._bounded_pending_gate(service, "THY1017", result, directly_inside=False)
+    second = guard._bounded_pending_gate(service, "THY1017", result, directly_inside=False)
+    third = guard._bounded_pending_gate(service, "THY1017", result, directly_inside=False)
+
+    assert first.suppress_alert is True
+    assert second.suppress_alert is True
+    assert third.suppress_alert is False
+
+
+def test_route_pending_grace_never_hides_direct_observed_presence():
+    service = RouteHistoryService()
+    result = RouteGateResult(False, "THY1017", "no route")
+    direct = guard._bounded_pending_gate(service, "THY1017", result, directly_inside=True)
+    assert direct.suppress_alert is False
 
 
 def test_conflicting_sources_keep_position_aware_primary_destination():
