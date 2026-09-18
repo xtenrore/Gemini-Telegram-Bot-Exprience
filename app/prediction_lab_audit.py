@@ -1,0 +1,151 @@
+"""Bounded, deterministic Prediction Lab telemetry.
+
+This module records what Plane Alerts predicted before the outcome was known.
+It never calls AI and never changes alert decisions.  The AGY worker consumes a
+sanitized copy of this data later to compare expectations with reality.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.database import get_db
+
+logger = logging.getLogger(__name__)
+
+# One snapshot per user/aircraft/minute is enough for calibration while keeping
+# Mongo writes bounded even when "all aircraft" monitoring is enabled.
+_SNAPSHOT_INTERVAL_S = 60.0
+_MAX_THROTTLE_KEYS = 4096
+_last_snapshot: dict[tuple[int, str], float] = {}
+
+
+def _prune_throttle(now: float) -> None:
+    if len(_last_snapshot) <= _MAX_THROTTLE_KEYS:
+        return
+    cutoff = now - 7200.0
+    for key, seen in list(_last_snapshot.items()):
+        if seen < cutoff:
+            _last_snapshot.pop(key, None)
+    if len(_last_snapshot) > _MAX_THROTTLE_KEYS:
+        oldest = sorted(_last_snapshot.items(), key=lambda item: item[1])[: len(_last_snapshot) - _MAX_THROTTLE_KEYS]
+        for key, _ in oldest:
+            _last_snapshot.pop(key, None)
+
+
+def _horizon_bucket(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    if seconds < 0:
+        return "passed_or_invalid"
+    if seconds <= 600:
+        return "0-10m"
+    if seconds <= 1800:
+        return "10-30m"
+    if seconds <= 3600:
+        return "30-60m"
+    return ">60m"
+
+
+async def record_prediction_snapshot(
+    *,
+    user_id: int,
+    aircraft: Any,
+    prediction: Any,
+    alert_radius_km: float,
+    qualifies: bool,
+    route_suppressed: bool,
+    route_reason: str = "",
+) -> None:
+    """Persist a pre-outcome prediction, rate-limited and TTL bounded."""
+    now_mono = time.monotonic()
+    icao = str(getattr(aircraft, "icao24", "") or "").lower().strip()
+    if not icao:
+        return
+    key = (int(user_id), icao)
+    previous = _last_snapshot.get(key, 0.0)
+    if now_mono - previous < _SNAPSHOT_INTERVAL_S:
+        return
+    _last_snapshot[key] = now_mono
+    _prune_throttle(now_mono)
+
+    now = datetime.now(timezone.utc)
+    t_cpa = getattr(prediction, "time_to_cpa_s", None)
+    try:
+        t_cpa = float(t_cpa) if t_cpa is not None else None
+    except (TypeError, ValueError):
+        t_cpa = None
+
+    doc = {
+        "kind": "prediction",
+        "captured_at": now,
+        "expires_at": now + timedelta(days=4),
+        "user_id": int(user_id),
+        "aircraft_icao24": icao,
+        "callsign": str(getattr(aircraft, "callsign", "") or "").strip(),
+        "aircraft_type": str(getattr(aircraft, "aircraft_type", "") or getattr(aircraft, "display_type", "") or ""),
+        "current_distance_km": float(getattr(prediction, "current_distance_km", 0.0) or 0.0),
+        "projected_closest_km": float(getattr(prediction, "projected_closest_km", 0.0) or 0.0),
+        "time_to_cpa_s": t_cpa,
+        "horizon_bucket": _horizon_bucket(t_cpa),
+        "state": str(getattr(prediction, "state", "") or ""),
+        "confidence": str(getattr(prediction, "confidence", "") or ""),
+        "confidence_score": float(getattr(prediction, "confidence_score", 0.0) or 0.0),
+        "enters_alert_radius": bool(getattr(prediction, "enters_alert_radius", False)),
+        "alert_radius_km": float(alert_radius_km),
+        "qualifies": bool(qualifies),
+        "route_suppressed": bool(route_suppressed),
+        "route_reason": str(route_reason or "")[:500],
+        # Important honesty marker: current live acquisition is regional, so a
+        # lack of 30-60m examples must never be interpreted as forecast accuracy.
+        "coverage_mode": "regional_adsb_current_predictor",
+    }
+    try:
+        await get_db()["prediction_lab_audit"].insert_one(doc)
+    except Exception:
+        logger.exception("prediction_lab_snapshot_failed user=%s icao=%s", user_id, icao)
+
+
+async def record_prediction_outcome(
+    *,
+    user_id: int,
+    aircraft: Any,
+    outcome: str,
+    observed_closest_km: float,
+    final_prediction: Any,
+    previous_projected_closest_km: float | None = None,
+    route_suppressed: bool = False,
+    route_reason: str = "",
+) -> None:
+    """Persist ground truth/lifecycle outcome for later replay and calibration."""
+    now = datetime.now(timezone.utc)
+    icao = str(getattr(aircraft, "icao24", "") or "").lower().strip()
+    try:
+        previous_cpa = float(previous_projected_closest_km) if previous_projected_closest_km is not None else None
+    except (TypeError, ValueError):
+        previous_cpa = None
+    doc = {
+        "kind": "outcome",
+        "captured_at": now,
+        "expires_at": now + timedelta(days=8),
+        "user_id": int(user_id),
+        "aircraft_icao24": icao,
+        "callsign": str(getattr(aircraft, "callsign", "") or "").strip(),
+        "aircraft_type": str(getattr(aircraft, "aircraft_type", "") or getattr(aircraft, "display_type", "") or ""),
+        "outcome": str(outcome),
+        "observed_closest_km": float(observed_closest_km),
+        "previous_projected_closest_km": previous_cpa,
+        "final_projected_closest_km": float(getattr(final_prediction, "projected_closest_km", 0.0) or 0.0),
+        "final_time_to_cpa_s": getattr(final_prediction, "time_to_cpa_s", None),
+        "final_state": str(getattr(final_prediction, "state", "") or ""),
+        "final_confidence": str(getattr(final_prediction, "confidence", "") or ""),
+        "route_suppressed": bool(route_suppressed),
+        "route_reason": str(route_reason or "")[:500],
+        "coverage_mode": "regional_adsb_current_predictor",
+    }
+    try:
+        await get_db()["prediction_lab_audit"].insert_one(doc)
+    except Exception:
+        logger.exception("prediction_lab_outcome_failed user=%s icao=%s", user_id, icao)
