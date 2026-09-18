@@ -59,6 +59,11 @@ done
 export TERM="${TERM:-xterm-256color}"
 export COLUMNS="${COLUMNS:-120}"
 export LINES="${LINES:-40}"
+# The Telegram bridge creates a PTY, but Linux initializes it with 0 rows/cols
+# in this headless container. Give the outer PTY a real size before `script`
+# creates AGY's controlling TTY; otherwise the TUI can start without rendering
+# the Google OAuth URL or authorization-code prompt.
+stty rows "$LINES" cols "$COLUMNS" <&0 2>/dev/null || true
 cmd=("$REAL" --model "$MODEL" "$@")
 printf -v quoted '%q ' "${cmd[@]}"
 exec script -qefc "$quoted" /dev/null
