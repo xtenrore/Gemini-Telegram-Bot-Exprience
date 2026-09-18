@@ -29,13 +29,15 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-pat
     && test -x /root/.local/bin/agy \
     && mv /root/.local/bin/agy /usr/local/bin/agy-real
 
-# Wrapper pins every normal AGY session to Gemini 3.1 Pro High.  This prevents
-# autonomous runs from drifting onto Claude/GPT models.  Non-agent metadata
-# commands still pass straight through to the real binary.
+# Wrapper pins every normal AGY session to Gemini 3.1 Pro High and strips
+# Railway secrets before the agent process starts. Metadata-only commands still
+# pass straight through to the real binary.
 RUN cat > /usr/local/bin/agy <<'SH' && chmod +x /usr/local/bin/agy
 #!/usr/bin/env bash
 set -e
 REAL=/usr/local/bin/agy-real
+unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL || true
+unset AGY_WORKER_TOKEN AGY_KEYRING_PASSWORD MONGO_URI ADMIN_PASSWORD TELEGRAM_BOT_TOKEN || true
 case "${1:-}" in
   --version|-v|version|models|agents|help|--help|-h)
     exec "$REAL" "$@"
