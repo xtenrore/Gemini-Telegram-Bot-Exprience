@@ -1,4 +1,4 @@
-"""Plane? v3.7 aircraft spotting intelligence, live map, Telegram bot, and web server."""
+"""Plane? v3.7 aircraft spotting intelligence, Telegram-native map, bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +22,6 @@ from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
-from app.live_map import router as live_map_router
 from app.logging_security import configure_secure_logging
 from app.photography.telegram import register_photography_handlers
 from app.worker.monitor import get_cycle_stats, init_services
@@ -36,7 +35,7 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info(
-        "Integrated ADS-B worker enabled: base interval=%ds, v3.6 priority-aware shared polling + v3.7 live-map cache active",
+        "Integrated ADS-B worker enabled: base interval=%ds, v3.6 priority-aware shared polling + v3.7 Telegram satellite-map rendering active",
         settings.poll_interval_seconds,
     )
     first_cycle_confirmed = False
@@ -71,7 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
     configure_secure_logging()
-    logger.info("Initializing Plane? v3.7 Live Relative Map + Spotting Intelligence...")
+    logger.info("Initializing Plane? v3.7 Telegram Live Map + Spotting Intelligence...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
@@ -175,7 +174,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Plane? Spotting Intelligence",
-    description="Deterministic real-time ADS-B spotting intelligence with lightweight live relative-position mapping",
+    description="Deterministic real-time ADS-B spotting intelligence with Telegram-native satellite mapping",
     version="3.7.0",
     lifespan=lifespan,
 )
@@ -189,7 +188,6 @@ app.add_middleware(
 app.add_middleware(DelegatedAdminMiddleware)
 app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(admin_v36_router, prefix="/admin", tags=["admin-v3.6"])
-app.include_router(live_map_router, tags=["live-map-v3.7"])
 
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=Response)
@@ -254,8 +252,9 @@ async def health_check() -> dict[str, Any]:
             "weather_provider": "Open-Meteo",
             "shared_adaptive_adsb_polling": True,
             "priority_admin_controls": True,
-            "live_relative_satellite_map": True,
-            "live_map_extra_adsb_polling": False,
+            "telegram_satellite_map": True,
+            "telegram_map_extra_adsb_polling": False,
+            "browser_live_map": False,
         },
         "python_version": platform.python_version(),
     }
@@ -291,9 +290,8 @@ async def stats() -> dict[str, Any]:
         "discovery_poll_interval_seconds": 15,
         "hot_region_poll_interval_seconds": 5,
         "priority_hot_interval_seconds": 5,
-        "live_map_browser_poll_seconds": 2.5,
-        "live_map_background_poll_seconds": 15,
-        "live_map_extra_provider_requests": 0,
+        "telegram_map_extra_provider_requests": 0,
+        "telegram_map_uses_monitor_cycle": True,
         "default_radius_km": settings.default_radius_km,
         "cooldown_minutes": settings.cooldown_minutes,
         "cycle_stats": get_cycle_stats(),
