@@ -182,6 +182,52 @@ def render_next60_native(
     return "\n".join(lines), markup
 
 
+def render_next60(now: datetime, docs: list[dict[str, Any]]) -> str:
+    """Compatibility text renderer retained for Prediction Lab/replay callers.
+
+    The Telegram command uses ``render_next60_native``. This renderer keeps the
+    older evidence wording available to tests and non-interactive consumers.
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "0–15 min": [],
+        "15–30 min": [],
+        "30–60 min": [],
+    }
+    for doc in docs:
+        cpa = _aware(doc.get("predicted_cpa_at"))
+        if cpa is None:
+            continue
+        horizon = (cpa - now).total_seconds() / 60.0
+        if 0 <= horizon <= 60:
+            buckets[_bucket(horizon)].append(doc)
+
+    lines = ["✈️ <b>Plane Alerts · Next 60 Minutes</b>"]
+    for label in ("0–15 min", "15–30 min", "30–60 min"):
+        lines.append(f"\n<b>{label}</b>")
+        rows = sorted(buckets[label], key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
+        if not rows:
+            lines.append("No current candidates.")
+            continue
+        for doc in rows:
+            callsign = html.escape(_identity(doc) or "Unknown")
+            confidence = html.escape(str(doc.get("confidence") or "Low"))
+            if doc.get("source") == "live":
+                stage = html.escape(str(doc.get("stage") or "live"))
+                evidence = f"live trajectory · {stage}"
+            else:
+                days = int(doc.get("historical_days") or 0)
+                evidence = f"history shadow · {days} day{'s' if days != 1 else ''}"
+            lines.append(
+                f"• <b>{callsign}</b> · {_eta_text(now, doc)} · {_distance_text(doc)}\n"
+                f"  confidence {confidence} · {evidence}"
+            )
+
+    lines.append(
+        "\n<i>Live trajectory/CPA is preferred when available. 30–60 min history entries are shadow estimates, not guaranteed alerts.</i>"
+    )
+    return "\n".join(lines)
+
+
 async def _history_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
     horizon = now + timedelta(minutes=60)
     cursor = get_db()["prediction_lab_audit"].find(
