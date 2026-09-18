@@ -1,9 +1,7 @@
 from types import SimpleNamespace
 
-from app.intelligence.route_guard import (
-    _route_from_adsbdb,
-    evaluate_route_gate_destination_aware,
-)
+from app.intelligence.route_guard import _route_from_adsbdb
+from app.intelligence.route_guard_v2 import evaluate_route_gate_destination_aware
 from app.intelligence.route_history import AirportInfo
 
 
