@@ -109,7 +109,7 @@ def setup_complete_message(
     radius_km: float,
 ) -> str:
     """Build the setup-complete summary message."""
-    lines = ["🎉 <b>Plane Alerts setup complete!</b>\n"]
+    lines = ["🎉 <b>Setup complete — Plane Alerts!</b>\n"]
 
     lines.append("<b>Monitoring for:</b>")
     for cat in selected_categories:
