@@ -1,6 +1,6 @@
-"""Plane Alerts v4.0 priority-aware shared ADS-B scheduling.
+"""Plane Alerts v4.1 priority-aware shared ADS-B scheduling.
 
-v4.0 keeps the proven shared-provider polling architecture while adding the
+v4.1 keeps the proven shared-provider polling architecture while adding the
 Prediction Lab and Europe sentinel network outside the user alert path. Priority
 users are still evaluated first and their shared region stays on the 5-second
 hot cadence. Delay Time remains a minimum per-user evaluation delay, so
@@ -131,7 +131,7 @@ async def _record_v36_metrics(
         await system_status_col().update_one(
             {"_id": "monitor_worker"},
             {"$set": {
-                "plane_version": "4.0.0",
+                "plane_version": "4.1.0",
                 "shared_regions_last_cycle": region_count,
                 "provider_queries_last_cycle": provider_queries,
                 "shared_snapshot_cache_hits_last_cycle": cache_hits,
@@ -143,7 +143,7 @@ async def _record_v36_metrics(
             upsert=True,
         )
     except Exception:
-        logger.debug("Unable to persist v4.0 polling metrics", exc_info=True)
+        logger.debug("Unable to persist v4.1 polling metrics", exc_info=True)
 
 
 async def _monitor_cycle_v36() -> None:
@@ -261,4 +261,4 @@ async def run_monitor_cycle_v36() -> None:
     try:
         await _monitor_cycle_v36()
     except Exception:
-        logger.exception("Plane Alerts v4.0 monitor cycle failed unexpectedly")
+        logger.exception("Plane Alerts v4.1 monitor cycle failed unexpectedly")
