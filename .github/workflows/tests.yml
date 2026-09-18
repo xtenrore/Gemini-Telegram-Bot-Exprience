@@ -41,5 +41,8 @@ jobs:
           OPENSKY_CREDENTIALS_JSON: ""
         run: pytest -q
 
+      - name: Benchmark v4.2 terminal-arrival ensemble
+        run: python scripts/benchmark_v42.py
+
       - name: Verify dependency consistency
         run: pip check
