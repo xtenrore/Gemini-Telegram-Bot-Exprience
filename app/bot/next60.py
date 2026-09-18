@@ -7,6 +7,7 @@ creates/cancels alerts and never calls AI or a paid API.
 from __future__ import annotations
 
 import html
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,8 +15,10 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+from app.bot.forecast_card import render_forecast_card
 from app.database import get_db, users_col
 
+logger = logging.getLogger(__name__)
 MAX_ROWS = 30
 
 
@@ -191,6 +194,23 @@ async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
     return docs
 
 
+async def _send_forecast_photo(message: Any, now: datetime, docs: list[dict[str, Any]]) -> None:
+    """Send the deterministic PNG first; text still follows as the accessible detail view."""
+    try:
+        card = render_forecast_card(now, docs)
+        await message.reply_photo(
+            photo=card,
+            caption=(
+                "Plane Alerts · Next 60 Minutes\n"
+                "Live CPA + Prediction Lab shadow forecast"
+            ),
+        )
+    except Exception:
+        # Image rendering must never make the command fail. The text forecast is
+        # still the authoritative fallback and contains the complete details.
+        logger.exception("next60_forecast_card_failed")
+
+
 async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     user = update.effective_user
@@ -226,8 +246,13 @@ async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     docs = list(merged.values())
     docs.sort(key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
+    docs = docs[:MAX_ROWS]
+
+    # Visual summary first, then the full text data. The PNG is generated
+    # locally from these exact docs; there is no AI image generation at runtime.
+    await _send_forecast_photo(message, now, docs)
     await message.reply_text(
-        render_next60(now, docs[:MAX_ROWS]),
+        render_next60(now, docs),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
