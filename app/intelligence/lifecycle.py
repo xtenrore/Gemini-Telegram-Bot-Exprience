@@ -47,8 +47,8 @@ def prediction_changed(previous_cpa_km: float | None, new_cpa_km: float, alert_r
 def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_radius_km: float) -> bool:
     """Return whether *this cycle* contains credible cancellation evidence.
 
-    The caller still has to observe this evidence for multiple consecutive cycles.
-    One provider spike or one heading wobble therefore cannot cancel a live alert.
+    The caller still has to observe this evidence multiple times. Provider gaps or
+    low-confidence miss samples do not themselves become cancellation evidence.
     """
     if getattr(prediction, "stale", False):
         return False
@@ -81,13 +81,6 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
         and confidence_score >= 0.58
     )
 
-    # Low-confidence predictions are deliberately not allowed to retire an ETA
-    # merely for crossing the ordinary clear-miss boundary. Production evidence
-    # showed, however, that a stable qualifying CPA could remain displayed while
-    # fresh deterministic predictions repeatedly moved to more than roughly two
-    # alert radii away. Treat that larger miss as credible evidence at Low+
-    # confidence; the caller still requires three consecutive cycles, preserving
-    # protection against one-off provider/heading spikes.
     extreme_miss_margin_km = max(10.0, radius * 1.00)
     extreme_repeated_miss = (
         state == "Will not approach"
@@ -99,8 +92,16 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
 
 
 def advance_cancellation_confirmation(previous_count: int, candidate: bool, *, required: int = CANCELLATION_CONFIRMATIONS_REQUIRED) -> tuple[bool, int]:
-    """Require N consecutive credible cycles before cancelling an active alert."""
+    """Accumulate credible cancellation evidence without provider-gap starvation.
+
+    A non-evidence cycle while the alert is already in the non-qualifying branch is
+    neutral: it neither increments nor erases prior credible evidence. This matters
+    when fresh provider samples alternate with degraded/low-confidence continuity
+    samples. A genuinely qualifying trajectory is handled outside this branch by the
+    monitor and resets the stored cancellation counter when the stable ETA is updated.
+    """
+    count = max(0, int(previous_count))
     if not candidate:
-        return False, 0
-    count = max(0, int(previous_count)) + 1
+        return False, count
+    count += 1
     return count >= max(1, int(required)), count
