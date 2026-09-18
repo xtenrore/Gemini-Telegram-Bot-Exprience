@@ -68,13 +68,16 @@ def _destination_aware_arrival_guard(**kwargs):
         or (vertical_rate_mps is not None and float(vertical_rate_mps) <= -0.25)
     )
 
-    # Before terminal descent, a known destination can still prove that the
-    # straight-vector observer CPA is impossible: the projected CPA would carry
-    # the aircraft materially farther from its destination while its current
-    # heading conflicts with the destination bearing. This is stronger evidence
-    # than altitude alone and fixes high-altitude pre-terminal false alerts.
+    # A resolved destination can prove the straight-vector observer CPA is
+    # impossible even before the aircraft enters the 160 km terminal bucket.
+    # Production showed long-range IST arrivals generating sub-km CPAs and then
+    # moving to 17+ km once the real turn developed.  Do not gate this geometric
+    # contradiction on destination distance: if the projected observer-CPA point
+    # materially increases distance to the known destination AND the live heading
+    # conflicts with the destination bearing, the route itself proves a turn is
+    # required. Physical presence inside the user's radius still wins above.
     projected_conflict = False
-    if destination_distance <= 160.0 and projected_path is not None:
+    if projected_path is not None:
         cpa_destination = route_guard._projected_cpa_destination_distance(
             projected_path,
             observer_lat=float(observer_lat),
