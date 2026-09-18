@@ -1,0 +1,1 @@
+Regression target: repeating /agy while a Telegram-side AGY session is already active must not restart the worker console or reset its output cursor. Interactive AGY sessions in Railway must run under a genuine controlling PTY so the remote SSH OAuth URL/code prompt is emitted to the bridge.
