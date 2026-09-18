@@ -1,0 +1,43 @@
+{
+  "case_id": "v42-ist-arrival-false-alert-2026-09-18",
+  "source": "Railway production telemetry",
+  "classification": "decision-level reconstruction",
+  "raw_adsb_track_available": false,
+  "note": "Production logs retained decision/CPA/route evidence but not the complete raw sample sequence, so this fixture must not be described as a centimeter-accurate track replay.",
+  "encounters": [
+    {
+      "flight": "THY2GN",
+      "icao24": "4baa66",
+      "old_system": {
+        "2026-09-18T16:51:54Z": "route resolution pending; source conflict IST vs SJJ",
+        "2026-09-18T16:52:16Z": "route unresolved after grace; route gate suppress=false; destination unknown",
+        "stored_projected_cpa_km": 4.291325548733524,
+        "2026-09-18T16:52:56Z": "matching history starts vetoing as live path changes",
+        "2026-09-18T16:53:09Z": "candidate CPA moved to 17.26 km",
+        "2026-09-18T16:53:22Z": "active alert cancelled after 3 confirmations"
+      },
+      "failure": "straight/current-vector CPA was allowed to qualify before arrival-turn evidence matured"
+    },
+    {
+      "flight": "THY7ER",
+      "icao24": "4baa4e",
+      "old_system": {
+        "2026-09-18T18:26:26Z": "destination resolved as IST and route plausible",
+        "2026-09-18T18:26:31Z": "route gate suppress=false despite known IST arrival",
+        "2026-09-18T18:26:40Z": "history divergence incorrectly became a suppression reason",
+        "stored_projected_cpa_km": 7.658355385623296,
+        "2026-09-18T18:31:41Z": "matching route history vetoed the active alert",
+        "2026-09-18T18:31:58Z": "alert cancelled after 3 confirmations"
+      },
+      "failure": "known destination plus arrival geometry was not itself represented as a weighted future-path hypothesis; history divergence also had inverted authority"
+    }
+  ],
+  "v42_expected_behavior": {
+    "first_candidate": "SHADOW / TRAJECTORY_CONFIRMING",
+    "terminal_arrival": "require ensemble score plus 3 fresh confirmations unless CPA is imminent",
+    "expected_turn": "airport-convergence paths may suppress while the bounded expected-turn window remains plausible",
+    "turn_did_not_occur": "airport/history authority decays and live ensemble can qualify within 2 fresh confirmations",
+    "stale_data": "uncertainty only; never confirmation of a predicted turn",
+    "post_pass": "same encounter remains locked until separation plus a genuinely new inbound approach"
+  }
+}
