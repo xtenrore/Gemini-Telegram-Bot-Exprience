@@ -14,5 +14,8 @@ def test_agy_dockerfile_installs_script_and_wraps_interactive_sessions():
 
 def test_agy_wrapper_keeps_paid_api_key_fallback_disabled():
     text = Path("Dockerfile.agy").read_text(encoding="utf-8")
+    lowered = text.lower()
     assert "unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL" in text
     assert "gemini-3.1-pro-high" in text
+    assert "claude" not in lowered
+    assert "gpt-" not in lowered
