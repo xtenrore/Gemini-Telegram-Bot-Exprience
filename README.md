@@ -2,6 +2,10 @@
 
 **Real-time aircraft spotting alerts built around trajectory, route context, and measured prediction accuracy.**
 
+### ✈️ Want to try Plane Alerts?
+
+**Message [@planebotnotifierbot](https://t.me/planebotnotifierbot) on Telegram to get started.**
+
 Plane Alerts watches live ADS-B traffic around saved spotting locations and tries to answer the question that matters: **is this aircraft actually going to pass close enough to photograph?**
 
 It does not alert simply because an aircraft is nearby, pointed in roughly the right direction, or flying to a nearby airport. The system continuously evaluates motion, projected closest approach, route behaviour, prediction confidence, and what happened after earlier predictions.
@@ -12,7 +16,7 @@ The current generation is **Plane Alerts v4.0**.
 
 v4.0 adds a continuous prediction-audit system around the existing spotting engine.
 
-Plane Alerts now records what it expected to happen and compares that with what actually happened later. The Prediction Lab focuses on the parts of an aircraft alert system that are easiest to get subtly wrong:
+Plane Alerts records what it expected to happen and compares that with what actually happened later. The Prediction Lab focuses on the parts of an aircraft alert system that are easiest to get subtly wrong:
 
 - ETA accuracy and stability
 - projected closest point of approach
@@ -50,7 +54,7 @@ For each relevant aircraft, Plane Alerts keeps a short bounded trajectory histor
 - prediction confidence
 - recent route behaviour for the same flight number
 
-The alert engine can classify an aircraft as states such as **Approaching**, **Passing nearby**, **Moving away**, **Will not approach**, **Prediction uncertain**, **Turning away**, **Trajectory changed**, and **Passed**.
+The alert engine can classify an aircraft as **Approaching**, **Passing nearby**, **Moving away**, **Will not approach**, **Prediction uncertain**, **Turning away**, **Trajectory changed**, or **Passed**.
 
 An active alert is continuously recalculated. If the evidence changes, the message can be updated or cancelled instead of continuing a countdown that no longer makes sense.
 
@@ -60,17 +64,17 @@ Historical routing is keyed by the **flight number / transmitted flight callsign
 
 That matters because the same scheduled flight can be operated by different airframes while still following a recognisable route pattern. Plane Alerts stores bounded recent route traces and can compare today's developing path with recent flights while keeping live geometry authoritative.
 
-Route history is used as supporting evidence, not as permission for an old route to blindly override what the aircraft is doing now.
+Route history is supporting evidence, not permission for an old route to blindly override what the aircraft is doing now.
 
 ## Next 60 Minutes
 
-v4.0 also introduces a shadow-learning path for longer-range spotting expectations.
+v4.0 introduces a shadow-learning path for longer-range spotting expectations.
 
 The system can build an expectation from recent flight-number route timing and later compare it with the route actually observed today. Longer horizons are deliberately treated with more uncertainty than live CPA prediction.
 
 Missing ADS-B coverage is recorded as **unresolved coverage** rather than being counted as either a correct forecast or a miss.
 
-The 30–60 minute system remains measurement-first: it should earn trust from recorded outcomes before it is allowed to behave like a precise live ETA system.
+The 30–60 minute system is measurement-first: it should earn trust from recorded outcomes before it is allowed to behave like a precise live ETA system.
 
 ## Shared ADS-B polling
 
@@ -113,7 +117,9 @@ The physical calculations remain deterministic. AI may explain a result, but it 
 
 ## Telegram
 
-Plane Alerts is controlled primarily through Telegram.
+**Start here: [message @planebotnotifierbot](https://t.me/planebotnotifierbot) on Telegram.**
+
+Then use `/start` and follow the setup flow to choose your location, aircraft preferences, and spotting settings.
 
 | Command | Purpose |
 | --- | --- |
@@ -141,8 +147,6 @@ A separate **Plane-Alerts-AGY** Railway worker handles the Antigravity investiga
 New AGY findings are persisted immediately and emitted as `CHATGPT_HANDOFF_JSON` records so an independent engineering task can process them later without needing to run at the same minute as AGY.
 
 ## Reliability model
-
-The v4.0 improvement loop is intentionally evidence-driven:
 
 ```text
 Live ADS-B
