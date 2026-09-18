@@ -9,14 +9,17 @@ if "pytest" not in sys.modules:
 
     install_reliability_guards()
 
-    # Install the existing destination adapters first, then the v2 guard which
-    # moves route-network work off the live alert path and catches preterminal
-    # airport turns that the original terminal-only geometry could miss.
+    # Install the destination adapters first, then the non-blocking v2 route
+    # resolver, and finally the v4.2 ensemble qualification guard. v4.2 does
+    # not replace the trajectory engine; it constrains promotion of live CPA
+    # candidates using deterministic terminal-arrival evidence and persistence.
     from app.intelligence.route_guard import install_route_guard
     from app.intelligence.route_guard_v2 import install_route_guard_v2
+    from app.intelligence.route_guard_v42 import install_route_guard_v42
 
     install_route_guard()
     install_route_guard_v2()
+    install_route_guard_v42()
 
     # Final hot-path protection: cap individual provider latency and prevent
     # stale ADS-B positions from creating brand-new approach alerts.
