@@ -1,16 +1,15 @@
-"""Telegram notifications with concise v3.7 live approach message updates."""
+"""Telegram notifications with v3.7 native satellite-map message updates."""
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from html import escape
-from urllib.parse import quote
+from io import BytesIO
 
-from telegram import Bot, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden, TelegramError
 
@@ -18,6 +17,7 @@ from app.aircraft.models import NormalizedAircraft
 from app.config import settings
 from app.database import get_db, locations_col, users_col
 from app.photography.keyboards import notification_actions_keyboard
+from app.telegram_map import render_telegram_map
 
 logger = logging.getLogger(__name__)
 _send_semaphore = asyncio.Semaphore(20)
@@ -57,26 +57,6 @@ def _identity(ac: NormalizedAircraft) -> str:
     if callsign:
         return f"<b>{callsign}</b> · <code>{aircraft_type}</code>"
     return f"<b>{aircraft_type}</b>"
-
-
-def _public_base_url() -> str:
-    base = settings.webhook_url.strip()
-    if base:
-        return base.rstrip("/")
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    if railway_domain:
-        return f"https://{railway_domain}".rstrip("/")
-    return ""
-
-
-def _map_link(ac: NormalizedAircraft, notification_id: str = "") -> str:
-    links: list[str] = []
-    base = _public_base_url()
-    if base and notification_id:
-        token = quote(notification_id, safe="")
-        links.append(f'<a href="{base}/live/{token}">Live relative map</a>')
-    links.append(f'<a href="https://globe.adsb.fi/?icao={quote(ac.icao24 or "", safe="")}">ADSB.fi</a>')
-    return " · ".join(links)
 
 
 def _flight_status_line(ac: NormalizedAircraft, pred) -> str:
@@ -130,7 +110,7 @@ def _approach_text(
     observed_closest_km=None,
     prediction_changed=False,
 ) -> str:
-    """Build a compact glanceable Telegram alert."""
+    """Build the caption under the live Telegram map image."""
     title = {
         "prepare": "📡 <b>NEXT SHOT</b>",
         "camera_ready": "📷 <b>CAMERA READY</b>",
@@ -147,7 +127,6 @@ def _approach_text(
             lines.append(f"Alert cancelled · CPA <b>{cpa}</b> (was {float(previous_cpa_km):.1f} km)")
         else:
             lines.append(f"Alert cancelled · CPA <b>{cpa}</b>")
-        lines.append(_map_link(ac, notification_id))
         return "\n".join(lines)
 
     if stage == "passed":
@@ -156,7 +135,6 @@ def _approach_text(
         if ac.altitude is not None:
             passed_parts.append(f"{int(round(ac.altitude * 3.28084)):,} ft")
         lines.append(" · ".join(passed_parts))
-        lines.append(_map_link(ac, notification_id))
         return "\n".join(lines)
 
     countdown = camera.best_window_start_s if camera and camera.best_window_start_s is not None else pred.time_to_cpa_s
@@ -188,7 +166,7 @@ def _approach_text(
             seconds = int(moon_crossing.time_to_min_s or 0)
             lines.append(f"🌙 Moon crossing candidate in ~{seconds}s")
 
-    lines.append(_map_link(ac, notification_id))
+    lines.append("🛰 <i>Satellite map updates inside this Telegram message.</i>")
     return "\n".join(lines)
 
 
@@ -208,7 +186,7 @@ def _basic_alert_text(
     if aircraft.ground_speed is not None:
         details.append(f"{int(round(aircraft.ground_speed))} kt")
     lines.append(" · ".join(details))
-    lines.append(_map_link(aircraft, notification_id))
+    lines.append("🛰 <i>Satellite map is shown directly above.</i>")
     return "\n".join(lines)
 
 
@@ -230,6 +208,24 @@ async def _observer_coordinates(user_id: int) -> tuple[float, float] | None:
     while len(_location_cache) > _LOCATION_CACHE_MAX:
         _location_cache.popitem(last=False)
     return value[1], value[2]
+
+
+async def _render_map(user_id: int, aircraft, prediction=None) -> bytes | None:
+    observer = await _observer_coordinates(user_id)
+    if not observer or getattr(aircraft, "latitude", None) is None or getattr(aircraft, "longitude", None) is None:
+        return None
+    try:
+        return await render_telegram_map(observer[0], observer[1], aircraft, prediction)
+    except Exception:
+        logger.exception("telegram_map_render_failed user=%s icao=%s", user_id, getattr(aircraft, "icao24", ""))
+        return None
+
+
+def _photo_stream(data: bytes) -> BytesIO:
+    stream = BytesIO(data)
+    stream.name = "plane-map.jpg"
+    stream.seek(0)
+    return stream
 
 
 async def _record_photo_snapshot(
@@ -328,36 +324,100 @@ async def send_or_update_approach(
         except Exception:
             logger.exception("approach_snapshot_failed user=%s icao=%s", user_id, aircraft.icao24)
 
+    # Render from the aircraft object already used by the shared monitor. This is
+    # why the Telegram image cannot get stuck in an independent "waiting for ADS-B"
+    # state and does not create extra ADS-B provider requests.
+    frame = await _render_map(user_id, aircraft, prediction)
+
     async with _send_semaphore:
         try:
             bot = _get_bot()
-            if message_id:
+            if message_id and frame:
                 try:
-                    await bot.edit_message_text(
+                    await bot.edit_message_media(
                         chat_id=user_id,
                         message_id=int(message_id),
-                        text=text,
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True,
+                        media=InputMediaPhoto(
+                            media=_photo_stream(frame),
+                            caption=text,
+                            parse_mode=ParseMode.HTML,
+                        ),
                         reply_markup=markup,
                     )
                     return int(message_id)
                 except BadRequest as exc:
                     if "message is not modified" in str(exc).lower():
                         return int(message_id)
+                    # Existing v3.7 browser-map alerts were plain text. Telegram
+                    # cannot convert a text message into media in-place, so replace
+                    # it once with the new native map message and remove the old one.
                     logger.info(
-                        "live_edit_failed user=%s message=%s error=%s",
+                        "telegram_map_media_upgrade user=%s message=%s error=%s",
                         user_id,
                         message_id,
                         type(exc).__name__,
                     )
-            sent = await bot.send_message(
-                chat_id=user_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=markup,
-            )
+                    sent = await bot.send_photo(
+                        chat_id=user_id,
+                        photo=_photo_stream(frame),
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=markup,
+                    )
+                    try:
+                        await bot.delete_message(chat_id=user_id, message_id=int(message_id))
+                    except Exception:
+                        pass
+                    await asyncio.sleep(_MIN_SEND_INTERVAL)
+                    return int(sent.message_id)
+                except TelegramError as exc:
+                    logger.warning("telegram_map_edit_failed user=%s error=%s", user_id, type(exc).__name__)
+                    return int(message_id)
+
+            if message_id:
+                # Satellite imagery failure must never stop the live alert. Try to
+                # update the caption of an existing media message, then fall back to
+                # text editing for legacy messages.
+                try:
+                    await bot.edit_message_caption(
+                        chat_id=user_id,
+                        message_id=int(message_id),
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=markup,
+                    )
+                    return int(message_id)
+                except BadRequest:
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=user_id,
+                            message_id=int(message_id),
+                            text=text,
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                            reply_markup=markup,
+                        )
+                        return int(message_id)
+                    except BadRequest as exc:
+                        if "message is not modified" in str(exc).lower():
+                            return int(message_id)
+
+            if frame:
+                sent = await bot.send_photo(
+                    chat_id=user_id,
+                    photo=_photo_stream(frame),
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+            else:
+                sent = await bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=markup,
+                )
             await asyncio.sleep(_MIN_SEND_INTERVAL)
             return int(sent.message_id)
         except Forbidden:
@@ -384,11 +444,35 @@ async def send_aircraft_notification(
             await _record_photo_snapshot(user_id, aircraft, distance_km, notification_id, eta_seconds)
         except Exception:
             logger.exception("Could not persist photo snapshot %s", notification_id)
-    return await _send_message(
-        user_id,
-        msg,
-        notification_actions_keyboard(notification_id) if notification_id else None,
-    )
+
+    frame = await _render_map(user_id, aircraft)
+    async with _send_semaphore:
+        try:
+            bot = _get_bot()
+            if frame:
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=_photo_stream(frame),
+                    caption=msg,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=notification_actions_keyboard(notification_id) if notification_id else None,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=msg,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=notification_actions_keyboard(notification_id) if notification_id else None,
+                )
+            await asyncio.sleep(_MIN_SEND_INTERVAL)
+            return True
+        except Forbidden:
+            await users_col().update_one({"user_id": user_id}, {"$set": {"setup_complete": False}})
+            return False
+        except Exception:
+            logger.exception("notification_failed user=%s", user_id)
+            return False
 
 
 async def _send_message(
