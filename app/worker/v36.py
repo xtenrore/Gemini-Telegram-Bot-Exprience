@@ -1,11 +1,10 @@
-"""Plane? v3.6 priority-aware shared ADS-B scheduling used by the v3.8 runtime.
+"""Plane Alerts v4.0 priority-aware shared ADS-B scheduling.
 
-v3.8 intentionally keeps the proven v3.6 shared-provider architecture and v3.7
-Telegram satellite map. The monochrome UI layer is presentation-only and does
-not introduce another provider polling loop. Priority users are still evaluated
-first and their shared region stays on the 5-second hot cadence. Delay Time
-remains a minimum per-user evaluation delay, so administrators can slow
-individual users without multiplying provider calls.
+v4.0 keeps the proven shared-provider polling architecture while adding the
+Prediction Lab and Europe sentinel network outside the user alert path. Priority
+users are still evaluated first and their shared region stays on the 5-second
+hot cadence. Delay Time remains a minimum per-user evaluation delay, so
+administrators can slow individual users without multiplying provider calls.
 """
 from __future__ import annotations
 
@@ -79,7 +78,7 @@ def _region_order(region: v35.SharedPollRegion) -> tuple[int, float, str]:
 
 
 def _promote_priority_region(region_key: str, now_mono: float) -> None:
-    """Keep a priority region at v3.5's hot 5-second provider cadence."""
+    """Keep a priority region at the hot 5-second provider cadence."""
     snapshot = v35._shared_poller._snapshots.get(region_key)
     if snapshot is not None:
         snapshot.hot_until_mono = max(snapshot.hot_until_mono, now_mono + v35.HOT_HOLD_S)
@@ -98,7 +97,7 @@ async def _record_v36_metrics(
         await system_status_col().update_one(
             {"_id": "monitor_worker"},
             {"$set": {
-                "plane_version": "3.8.0",
+                "plane_version": "4.0.0",
                 "shared_regions_last_cycle": region_count,
                 "provider_queries_last_cycle": provider_queries,
                 "shared_snapshot_cache_hits_last_cycle": cache_hits,
@@ -110,7 +109,7 @@ async def _record_v36_metrics(
             upsert=True,
         )
     except Exception:
-        logger.debug("Unable to persist v3.8 polling metrics", exc_info=True)
+        logger.debug("Unable to persist v4.0 polling metrics", exc_info=True)
 
 
 async def _monitor_cycle_v36() -> None:
@@ -196,7 +195,7 @@ async def _monitor_cycle_v36() -> None:
                 _last_user_processed_mono[int(user["user_id"])] = completed_at
         except Exception:
             logger.exception(
-                "v38_shared_region_failed region=%s users=%d priority=%s",
+                "v4_shared_region_failed region=%s users=%d priority=%s",
                 region.key,
                 len(due_users),
                 region_has_priority,
@@ -216,7 +215,7 @@ async def _monitor_cycle_v36() -> None:
         notifications_paused=paused_users,
     )
     logger.info(
-        "v38_cycle users=%d processed=%d priority=%d deferred=%d paused=%d regions=%d provider_queries=%d cache_hits=%d notifications=%d duration_ms=%.1f",
+        "v4_cycle users=%d processed=%d priority=%d deferred=%d paused=%d regions=%d provider_queries=%d cache_hits=%d notifications=%d duration_ms=%.1f",
         len(users),
         processed_users,
         priority_users,
@@ -234,4 +233,4 @@ async def run_monitor_cycle_v36() -> None:
     try:
         await _monitor_cycle_v36()
     except Exception:
-        logger.exception("Plane? v3.8 monitor cycle failed unexpectedly")
+        logger.exception("Plane Alerts v4.0 monitor cycle failed unexpectedly")
