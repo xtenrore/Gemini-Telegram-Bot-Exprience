@@ -15,4 +15,3 @@ apscheduler>=3.10.4
 psutil>=5.9.0
 structlog>=24.4.0
 honcho>=1.1.0
-Pillow>=10.4.0
