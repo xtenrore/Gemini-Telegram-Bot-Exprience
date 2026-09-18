@@ -1,13 +1,15 @@
-"""Plane Alerts route-guard hotfix: non-blocking enrichment + earlier arrival-turn veto.
+"""Latency-safe destination guard for live Plane Alerts.
 
-The original destination guard contains the source adapters and terminal-arrival
-logic. This layer fixes two production issues without putting network I/O back
-on the alert path:
+This layer keeps route intelligence useful without allowing route/history I/O to
+block the aircraft-alert loop. It also catches arrival turns earlier than the
+legacy terminal-only rule.
 
-* route metadata is prefetched while aircraft are merely being observed;
-* a plausible inbound destination may veto a long-enough straight-line CPA even
-  before descent, when that CPA would materially carry the aircraft away from
-  its destination.
+Design rules:
+* route and history data may veto a live CPA but never create one;
+* network route resolution always runs in the background;
+* first predictive alerts may be held only for one short bounded grace window;
+* a fresh aircraft physically inside the user's radius is never hidden;
+* route-history writes are background work, not notification-path work.
 """
 from __future__ import annotations
 
@@ -25,8 +27,12 @@ from app.intelligence.trajectory import bearing_deg, haversine_km
 logger = logging.getLogger(__name__)
 
 _NEGATIVE_CACHE_S = 20.0
+_HISTORY_CACHE_S = 120.0
+_INITIAL_ROUTE_GRACE_S = 6.0
 _PRETERMINAL_DESTINATION_KM = 240.0
 _PRETERMINAL_MIN_CPA_S = 55.0
+_ROUTE_REFRESH_CONCURRENCY = 4
+_OBSERVE_TASK_LIMIT = 24
 _INSTALLED = False
 _ORIGINAL_OBSERVE = route_mod.RouteHistoryService.observe
 
@@ -39,7 +45,7 @@ def _choose_route_prefer_position_aware(
     callsign: str,
     candidates: list[tuple[str, route_mod.FlightRouteInfo | None]],
 ) -> tuple[route_mod.FlightRouteInfo | None, str]:
-    """Keep the ordered live-position-aware source when static sources conflict."""
+    """Keep the ordered position-aware source instead of discarding all data on conflict."""
     usable = [(source, route) for source, route in candidates if route is not None]
     if not usable:
         return None, ""
@@ -77,6 +83,15 @@ def _cached_route(
     return route, (time.monotonic() - cached[0] < ttl)
 
 
+async def _route_refresh(self: route_mod.RouteHistoryService, ac: Any) -> None:
+    semaphore = getattr(self, "_route_guard_v2_semaphore", None)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_ROUTE_REFRESH_CONCURRENCY)
+        self._route_guard_v2_semaphore = semaphore
+    async with semaphore:
+        await legacy.resolve_route_resilient(self, ac)
+
+
 def _schedule_route_refresh(self: route_mod.RouteHistoryService, ac: Any) -> None:
     key = route_mod.normalize_flight_key(getattr(ac, "callsign", ""))
     if not key:
@@ -89,10 +104,7 @@ def _schedule_route_refresh(self: route_mod.RouteHistoryService, ac: Any) -> Non
     if existing is not None and not existing.done():
         return
 
-    task = asyncio.create_task(
-        legacy.resolve_route_resilient(self, ac),
-        name=f"route-prefetch:{key}",
-    )
+    task = asyncio.create_task(_route_refresh(self, ac), name=f"route-refresh:{key}")
     tasks[key] = task
     self._route_guard_v2_tasks = tasks
 
@@ -103,19 +115,71 @@ def _schedule_route_refresh(self: route_mod.RouteHistoryService, ac: Any) -> Non
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("route_guard_prefetch_failed callsign=%s", callsign)
+            logger.exception("route_guard_refresh_failed callsign=%s", callsign)
 
     task.add_done_callback(_finished)
 
 
-async def observe_with_route_prefetch(
+async def observe_nonblocking(
     self: route_mod.RouteHistoryService,
     ac: Any,
     *,
     now: float | None = None,
 ) -> None:
-    await _ORIGINAL_OBSERVE(self, ac, now=now)
-    _schedule_route_refresh(self, ac)
+    """Persist route samples off-path so Mongo latency cannot delay notifications."""
+    key = route_mod.normalize_flight_key(getattr(ac, "callsign", ""))
+    if not key:
+        return
+    tasks: dict[str, asyncio.Task] = getattr(self, "_route_guard_v2_observe_tasks", {})
+    existing = tasks.get(key)
+    if existing is not None and not existing.done():
+        return
+    if len(tasks) >= _OBSERVE_TASK_LIMIT:
+        logger.warning("route_history_background_saturated active=%d", len(tasks))
+        return
+
+    task = asyncio.create_task(
+        _ORIGINAL_OBSERVE(self, ac, now=now),
+        name=f"route-observe:{key}",
+    )
+    tasks[key] = task
+    self._route_guard_v2_observe_tasks = tasks
+
+    def _finished(done: asyncio.Task, *, callsign: str = key) -> None:
+        tasks.pop(callsign, None)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("flight_route_observe_background_failed callsign=%s", callsign)
+
+    task.add_done_callback(_finished)
+
+
+async def _historical_paths_cached(
+    self: route_mod.RouteHistoryService,
+    key: str,
+) -> list[list[route_mod.RoutePoint]]:
+    cache: dict[str, tuple[float, list[list[route_mod.RoutePoint]]]] = getattr(
+        self, "_route_guard_v2_history_cache", {}
+    )
+    now = time.monotonic()
+    cached = cache.get(key)
+    if cached and now - cached[0] < _HISTORY_CACHE_S:
+        return cached[1]
+    try:
+        paths = await self._historical_paths(key)
+    except Exception:
+        logger.exception("flight_route_history_read_failed callsign=%s", key)
+        paths = []
+    cache[key] = (now, paths)
+    if len(cache) > 256:
+        oldest = sorted(cache.items(), key=lambda item: item[1][0])[:64]
+        for old_key, _ in oldest:
+            cache.pop(old_key, None)
+    self._route_guard_v2_history_cache = cache
+    return paths
 
 
 def evaluate_route_gate_destination_aware(
@@ -232,6 +296,49 @@ def evaluate_route_gate_destination_aware(
     )
 
 
+def _directly_inside(pred: Any, alert_radius_km: float) -> bool:
+    try:
+        return (
+            not bool(getattr(pred, "stale", False))
+            and float(getattr(pred, "current_distance_km")) <= float(alert_radius_km)
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _bounded_pending_gate(
+    self: route_mod.RouteHistoryService,
+    key: str,
+    result: route_mod.RouteGateResult,
+    *,
+    directly_inside: bool,
+) -> route_mod.RouteGateResult:
+    pending: dict[str, float] = getattr(self, "_route_guard_v2_pending_since", {})
+    now = time.monotonic()
+    for stale_key, started in list(pending.items()):
+        if now - started > 600.0:
+            pending.pop(stale_key, None)
+
+    if directly_inside or result.suppress_alert:
+        pending.pop(key, None)
+        self._route_guard_v2_pending_since = pending
+        return result
+
+    started = pending.setdefault(key, now)
+    self._route_guard_v2_pending_since = pending
+    elapsed = now - started
+    if elapsed < _INITIAL_ROUTE_GRACE_S:
+        return replace(
+            result,
+            suppress_alert=True,
+            reason=(
+                "route resolution pending in background before first projected approach alert "
+                f"({elapsed:.1f}s/{_INITIAL_ROUTE_GRACE_S:.0f}s max)"
+            ),
+        )
+    return result
+
+
 async def evaluate_route_nonblocking(
     self: route_mod.RouteHistoryService,
     ac: Any,
@@ -246,12 +353,7 @@ async def evaluate_route_nonblocking(
     if not key:
         return route_mod.RouteGateResult(False, "", "no usable flight-number callsign")
 
-    try:
-        history = await self._historical_paths(key)
-    except Exception:
-        logger.exception("flight_route_history_read_failed callsign=%s", key)
-        history = []
-
+    history = await _historical_paths_cached(self, key)
     route, cache_fresh = _cached_route(self, key)
     if not cache_fresh:
         _schedule_route_refresh(self, ac)
@@ -275,13 +377,19 @@ async def evaluate_route_nonblocking(
         heading_deg=getattr(ac, "heading", None),
     )
 
-    try:
-        directly_inside = (
-            not bool(getattr(pred, "stale", False))
-            and float(getattr(pred, "current_distance_km")) <= float(alert_radius_km)
+    directly_inside = _directly_inside(pred, alert_radius_km)
+    if route is None:
+        result = _bounded_pending_gate(
+            self,
+            key,
+            result,
+            directly_inside=directly_inside,
         )
-    except (TypeError, ValueError):
-        directly_inside = False
+    else:
+        pending: dict[str, float] = getattr(self, "_route_guard_v2_pending_since", {})
+        pending.pop(key, None)
+        self._route_guard_v2_pending_since = pending
+
     if directly_inside and result.suppress_alert:
         result = replace(
             result,
@@ -311,13 +419,11 @@ def install_route_guard_v2() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
-    # The legacy resolver performs all network work; the v2 evaluator never
-    # awaits it. Updating the chooser also prevents a source disagreement from
-    # erasing an otherwise position-plausible destination.
     legacy._choose_route = _choose_route_prefer_position_aware
-    route_mod.RouteHistoryService.observe = observe_with_route_prefetch
+    route_mod.RouteHistoryService.observe = observe_nonblocking
     route_mod.RouteHistoryService.evaluate = evaluate_route_nonblocking
     _INSTALLED = True
     logger.info(
-        "Route guard v2 enabled: background destination prefetch, non-blocking evaluation, preterminal turn veto"
+        "Route guard v2 enabled: non-blocking history writes, background route lookup, %.0fs max initial route grace, preterminal turn veto",
+        _INITIAL_ROUTE_GRACE_S,
     )
