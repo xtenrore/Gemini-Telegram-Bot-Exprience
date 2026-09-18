@@ -81,8 +81,6 @@ def _controls_keyboard(oauth_url: str | None = None) -> InlineKeyboardMarkup:
 
 def _sanitize_google_url(candidate: str) -> str | None:
     value = candidate.strip()
-    # OSC-8 hyperlinks may leave a closing `8;;` marker once terminal control
-    # bytes have been removed. It is never part of Google's OAuth URL.
     for marker in ("8;;", "]8;;", "\x1b", "\x07"):
         if marker in value:
             value = value.split(marker, 1)[0]
@@ -101,8 +99,6 @@ def _sanitize_google_url(candidate: str) -> str | None:
 
 def _extract_google_urls(lines: list[str]) -> list[str]:
     found: list[str] = []
-    # First inspect individual lines; then inspect the joined text in case a TUI
-    # split visual output across line events.
     candidates = list(lines)
     if len(lines) > 1:
         candidates.append("".join(lines))
@@ -112,6 +108,23 @@ def _extract_google_urls(lines: list[str]) -> list[str]:
             if cleaned and cleaned not in found:
                 found.append(cleaned)
     return found
+
+
+def _normalize_authorization_code(raw: str) -> str:
+    """Remove paste whitespace and collapse one exact accidental duplicate.
+
+    Google OAuth authorization codes contain no whitespace. iOS/Telegram can
+    introduce visual line wraps when copied, and a double-paste can produce
+    CODECODE. Both cases are safe to normalize before forwarding to AGY.
+    """
+    compact = re.sub(r"\s+", "", raw or "")
+    if not compact:
+        raise ValueError("Authorization code is empty")
+    if compact.startswith("4/") and len(compact) % 2 == 0:
+        half = len(compact) // 2
+        if compact[:half] == compact[half:]:
+            compact = compact[:half]
+    return compact
 
 
 async def _authorized(user_id: int) -> bool:
@@ -183,8 +196,6 @@ async def _send_console_lines(
             reply_markup=_controls_keyboard(oauth_url),
         )
 
-    # Do not repeat the terminal-rendered/corrupted version of a Google URL once
-    # we have extracted it into a proper Telegram button.
     display_lines = [line for line in lines if not _extract_google_urls([line])]
     for chunk in _chunks(display_lines):
         await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=_controls_keyboard())
@@ -241,10 +252,7 @@ async def _send_terminal_control(user_id: int, key: str) -> None:
 async def _send_code(user_id: int, code: str) -> None:
     if user_id not in _sessions:
         raise RuntimeError("AGY console is not connected")
-    code = code.strip()
-    if not code:
-        raise ValueError("Authorization code is empty")
-    # The worker appends the terminal newline; only the code itself is sent.
+    code = _normalize_authorization_code(code)
     await _request("POST", "/console/input", json={"text": code})
 
 
@@ -269,7 +277,10 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         try:
             await _send_code(user.id, code)
-            await message.reply_text("Authorization code sent to Antigravity.", reply_markup=_controls_keyboard())
+            await message.reply_text(
+                "Authorization code sanitized and sent once to Antigravity.",
+                reply_markup=_controls_keyboard(),
+            )
         except RuntimeError:
             await message.reply_text("AGY console is not connected. Send /agy first.")
         except Exception as exc:
@@ -317,8 +328,6 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await message.reply_text(f"Could not read AGY status ({type(exc).__name__}).")
         return
 
-    # Do not expose autonomous goal activation before the user finishes account
-    # authentication and explicitly tells ChatGPT to enable it.
     if action == "goal":
         await message.reply_text(
             "The autonomous goal loop is intentionally locked until your AGY Google login is confirmed."
@@ -414,8 +423,6 @@ async def handle_agy_text_if_active(update: Update) -> bool:
 async def _agy_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if await handle_agy_text_if_active(update):
-        # Prevent the normal Plane Alerts free-text handler from interpreting an
-        # OAuth code or AGY prompt as an ICAO/radius message.
         raise ApplicationHandlerStop
 
 
