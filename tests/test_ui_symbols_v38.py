@@ -21,6 +21,13 @@ def test_unknown_modern_emoji_falls_back_to_neutral_outline():
     assert not _has_supplementary_emoji(rendered)
 
 
+def test_compound_and_skin_tone_emoji_do_not_leak_color_sequences():
+    rendered = monochrome_text("Pilot 👨‍✈️ response 👍🏽")
+    assert "\u200d" not in rendered
+    assert "\ufe0f" not in rendered
+    assert not _has_supplementary_emoji(rendered)
+
+
 def test_inline_keyboard_labels_are_normalised_without_touching_callbacks():
     markup = InlineKeyboardMarkup(
         [[
