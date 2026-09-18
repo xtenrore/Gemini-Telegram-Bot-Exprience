@@ -2,17 +2,25 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import tracemalloc
+from pathlib import Path
 from types import SimpleNamespace
 
-from app.intelligence.route_guard_v42 import (
+# Executing a file under scripts/ puts scripts/ first on sys.path. Add the
+# repository root explicitly so this benchmark behaves the same in CI/local use.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.intelligence.route_guard_v42 import (  # noqa: E402
     _evaluate_motion_path,
     _motion_paths,
     _path_cache,
     reset_v42_state_for_tests,
 )
-from app.intelligence.route_history import AirportInfo
+from app.intelligence.route_history import AirportInfo  # noqa: E402
 
 
 def main() -> None:
