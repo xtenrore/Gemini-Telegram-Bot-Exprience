@@ -1,4 +1,4 @@
-# Aircraft Alert v3.2 - Telegram + Gemini photography
+# Plane Alerts v4.0 runtime dependencies
 
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
@@ -15,3 +15,4 @@ apscheduler>=3.10.4
 psutil>=5.9.0
 structlog>=24.4.0
 honcho>=1.1.0
+Pillow>=11.0.0
