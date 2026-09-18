@@ -1,4 +1,4 @@
-"""Plane Alerts v4.1 aircraft spotting intelligence, Prediction Lab, bot, and web server."""
+"""Plane Alerts v4.2 aircraft spotting intelligence, Prediction Lab, bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +41,7 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info(
-        "Integrated ADS-B worker enabled: base interval=%ds, shared polling + Plane Alerts v4.1 active",
+        "Integrated ADS-B worker enabled: base interval=%ds, shared polling + Plane Alerts v4.2 active",
         settings.poll_interval_seconds,
     )
     first_cycle_confirmed = False
@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
     configure_secure_logging()
-    logger.info("Initializing Plane Alerts v4.1 Prediction Lab + Spotting Intelligence...")
+    logger.info("Initializing Plane Alerts v4.2 Prediction Lab + Spotting Intelligence...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
@@ -163,7 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    logger.info("Shutting down Plane Alerts v4.1...")
+    logger.info("Shutting down Plane Alerts v4.2...")
     if telegram_app:
         try:
             if telegram_app.updater and telegram_app.updater.running:
@@ -191,8 +191,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Plane Alerts",
-    description="Deterministic real-time ADS-B spotting intelligence with v4.1 Prediction Lab",
-    version="4.1.0",
+    description="Deterministic real-time ADS-B spotting intelligence with v4.2 terminal-arrival qualification",
+    version="4.2.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -276,7 +276,7 @@ async def health_check() -> dict[str, Any]:
             is_stale = (time.time() - last_time) > (settings.poll_interval_seconds * 4)
             worker_info = {
                 "status": "active" if not is_stale else "stale",
-                "version": doc.get("plane_version", "4.1.0"),
+                "version": doc.get("plane_version", "4.2.0"),
                 "total_cycles": doc.get("total_cycles", 0),
                 "last_cycle_duration_ms": doc.get("last_cycle_duration_ms", 0.0),
                 "seconds_since_last_cycle": round(time.time() - last_time, 1),
@@ -291,7 +291,7 @@ async def health_check() -> dict[str, Any]:
         else:
             stats = get_cycle_stats()
             if stats.get("total_cycles", 0) > 0:
-                worker_info = {"status": "active (in-process)", "version": "4.1.0", "total_cycles": stats.get("total_cycles", 0)}
+                worker_info = {"status": "active (in-process)", "version": "4.2.0", "total_cycles": stats.get("total_cycles", 0)}
         sentinel_doc = await system_status_col().find_one({"_id": "prediction_lab_sentinels"})
         if sentinel_doc:
             sentinel_info.update({
@@ -306,7 +306,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "healthy" if db_ok else "degraded",
-        "version": "4.1.0",
+        "version": "4.2.0",
         "database_connected": db_ok,
         "bot_mode": bot_status,
         "uptime_seconds": round(time.time() - _server_start_time, 1),
@@ -314,6 +314,7 @@ async def health_check() -> dict[str, Any]:
         "sentinel_network": sentinel_info,
         "spotting_intelligence": {
             "deterministic_core": True,
+            "terminal_arrival_ensemble": True,
             "prediction_lab": True,
             "next_60_shadow": True,
             "europe_sentinel_shadow": True,
@@ -349,7 +350,7 @@ async def stats() -> dict[str, Any]:
     except Exception:
         pass
     return {
-        "version": "4.1.0",
+        "version": "4.2.0",
         "active_users": active_users,
         "total_users": total_users,
         "poll_interval_seconds": settings.poll_interval_seconds,
