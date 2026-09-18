@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     admin_telegram_id: int | None = None
     admin_password: str = ""
 
+    # Private Antigravity prediction-lab worker
+    agy_worker_url: str = ""
+    agy_worker_token: str = ""
+
     # Server
     host: str = "0.0.0.0"
     port: int = 8000

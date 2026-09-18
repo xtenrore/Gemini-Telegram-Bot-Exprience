@@ -1,0 +1,55 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    AGY_STATE_DIR=/agy-state \
+    AGY_WORKSPACE_DIR=/app \
+    AGY_MODEL=gemini-3.1-pro-high
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    dbus-x11 \
+    git \
+    gnome-keyring \
+    libsecret-tools \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-agy.txt .
+RUN pip install --no-cache-dir -r requirements-agy.txt
+
+# Official Google Antigravity CLI installer. Keep the binary outside HOME so
+# HOME can live entirely on the persistent Railway volume at runtime.
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-path --skip-aliases \
+    && test -x /root/.local/bin/agy \
+    && mv /root/.local/bin/agy /usr/local/bin/agy-real
+
+# Wrapper pins every normal AGY session to Gemini 3.1 Pro High and strips
+# Railway secrets before the agent process starts. Metadata-only commands still
+# pass straight through to the real binary.
+RUN cat > /usr/local/bin/agy <<'SH' && chmod +x /usr/local/bin/agy
+#!/usr/bin/env bash
+set -e
+REAL=/usr/local/bin/agy-real
+unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL || true
+unset AGY_WORKER_TOKEN AGY_KEYRING_PASSWORD MONGO_URI ADMIN_PASSWORD TELEGRAM_BOT_TOKEN || true
+case "${1:-}" in
+  --version|-v|version|models|agents|help|--help|-h)
+    exec "$REAL" "$@"
+    ;;
+esac
+exec "$REAL" --model "${AGY_MODEL:-gemini-3.1-pro-high}" "$@"
+SH
+
+RUN agy --version
+
+COPY . .
+RUN chmod +x /app/scripts/agy-worker-entrypoint.sh /app/scripts/agy_record_finding.py
+
+EXPOSE 8090
+CMD ["/app/scripts/agy-worker-entrypoint.sh"]
