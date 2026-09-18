@@ -44,11 +44,12 @@ fi
 unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL || true
 
 export PATH="/usr/local/bin:$PATH"
+export PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
 export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
 # Seed first-launch choices directly on the persistent volume so a phone-only
 # user does not have to navigate AGY's theme/rendering/workspace-trust wizard.
-# Also arm the persisted supervisor when AGY_GOAL_ENABLED=true.  Importantly we
+# Also arm the persisted supervisor when AGY_GOAL_ENABLED=true. Importantly we
 # preserve a future next_run_at so a Railway restart cannot bypass a quota wait.
 python - <<'PY'
 import json, os
