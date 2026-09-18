@@ -44,12 +44,13 @@ fi
 unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL || true
 
 export PATH="/usr/local/bin:$PATH"
+export PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
 export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
-# Seed first-launch choices directly on the persistent volume so a phone-only
-# user does not have to navigate AGY's theme/rendering/workspace-trust wizard.
-# Also arm the persisted supervisor when AGY_GOAL_ENABLED=true.  Importantly we
-# preserve a future next_run_at so a Railway restart cannot bypass a quota wait.
+# Seed first-launch choices and the minimum headless permissions on the
+# persistent volume. Do not use the dangerous global bypass: AGY may read the
+# Plane Alerts source and its redacted Prediction Lab context, and may only run
+# the explicitly allowlisted git/test/python commands configured by the worker.
 python - <<'PY'
 import json, os
 from pathlib import Path
@@ -71,6 +72,21 @@ trusted = list(data.get('trustedWorkspaces') or [])
 if '/app' not in trusted:
     trusted.append('/app')
 data['trustedWorkspaces'] = trusted
+permissions = data.setdefault('permissions', {})
+allow = list(permissions.get('allow') or [])
+required = [
+    'read_file(/app)',
+    'read_file(/agy-state/prediction-lab/context)',
+    'write_file(/agy-state/prediction-lab)',
+    'command(git)',
+    'command(pytest)',
+    'command(python)',
+    'command(regex:python /app/scripts/agy_record_finding.py.*)',
+]
+for rule in required:
+    if rule not in allow:
+        allow.append(rule)
+permissions['allow'] = allow
 tmp = settings_path.with_suffix('.tmp')
 tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
 tmp.replace(settings_path)
@@ -90,6 +106,12 @@ if enable:
     if goal:
         supervisor['goal'] = goal
     if not was_enabled:
+        supervisor['next_run_at'] = 0
+    # Changing this token deliberately forces one immediate run. Persisting the
+    # consumed token means ordinary restarts never reset a quota-wait deadline.
+    force_token = os.environ.get('AGY_FORCE_RUN_TOKEN', '').strip()
+    if force_token and supervisor.get('last_force_run_token') != force_token:
+        supervisor['last_force_run_token'] = force_token
         supervisor['next_run_at'] = 0
     stmp = supervisor_path.with_suffix('.tmp')
     stmp.write_text(json.dumps(supervisor, indent=2, sort_keys=True))
