@@ -154,8 +154,7 @@ class Settings(BaseSettings):
     admin_telegram_id: int | None = None
     admin_password: str = ""
 
-    # Private Antigravity prediction-lab worker. The worker is reachable only on
-    # Railway private networking and additionally requires a shared bearer token.
+    # Private Antigravity prediction-lab worker
     agy_worker_url: str = ""
     agy_worker_token: str = ""
 
