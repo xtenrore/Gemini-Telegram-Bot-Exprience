@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -23,6 +25,7 @@ from telegram.ext import (
     filters,
 )
 
+from app.agy_state import set_agy_console_active
 from app.config import settings
 from app.database import users_col
 
@@ -32,17 +35,25 @@ POLL_SECONDS = 1.0
 MAX_TELEGRAM_CHUNK = 3500
 
 # Telegram cannot send a blank message, so a terminal UI waiting for a bare
-# Enter key would otherwise be impossible to operate from the chat.  Keep the
+# Enter key would otherwise be impossible to operate from the chat. Keep this
 # mapping deliberately tiny: these are terminal keystrokes, never shell text.
 TERMINAL_CONTROLS: dict[str, str] = {
     "enter": "\r",
 }
+
+# Antigravity renders OAuth URLs using terminal hyperlink escape sequences.
+# The worker strips control bytes for Telegram, which can leave terminal markup
+# around the URL. Extract the HTTPS target and present it separately as a real
+# Telegram URL button instead of making the user copy terminal-rendered text.
+_URL_RE = re.compile(r"https://[^\s<>\"']+")
+_GOOGLE_HOST_SUFFIXES = (".google.com", ".googleusercontent.com")
 
 
 @dataclass
 class _Session:
     cursor: int = 0
     task: asyncio.Task[None] | None = None
+    seen_urls: set[str] = field(default_factory=set)
 
 
 _sessions: dict[int, _Session] = {}
@@ -60,10 +71,47 @@ def _headers() -> dict[str, str]:
     return {"X-AGY-Token": settings.agy_worker_token}
 
 
-def _controls_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("↵ Enter", callback_data="agy:key:enter")]]
-    )
+def _controls_keyboard(oauth_url: str | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if oauth_url:
+        rows.append([InlineKeyboardButton("🔐 Open Google sign-in", url=oauth_url)])
+    rows.append([InlineKeyboardButton("↵ Enter", callback_data="agy:key:enter")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _sanitize_google_url(candidate: str) -> str | None:
+    value = candidate.strip()
+    # OSC-8 hyperlinks may leave a closing `8;;` marker once terminal control
+    # bytes have been removed. It is never part of Google's OAuth URL.
+    for marker in ("8;;", "]8;;", "\x1b", "\x07"):
+        if marker in value:
+            value = value.split(marker, 1)[0]
+    value = value.rstrip(".,);]}>")
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        return None
+    if not (host == "google.com" or host.endswith(_GOOGLE_HOST_SUFFIXES)):
+        return None
+    return value
+
+
+def _extract_google_urls(lines: list[str]) -> list[str]:
+    found: list[str] = []
+    # First inspect individual lines; then inspect the joined text in case a TUI
+    # split visual output across line events.
+    candidates = list(lines)
+    if len(lines) > 1:
+        candidates.append("".join(lines))
+    for text in candidates:
+        for match in _URL_RE.findall(text):
+            cleaned = _sanitize_google_url(match)
+            if cleaned and cleaned not in found:
+                found.append(cleaned)
+    return found
 
 
 async def _authorized(user_id: int) -> bool:
@@ -113,6 +161,35 @@ def _chunks(lines: list[str]) -> list[str]:
     return out
 
 
+async def _send_console_lines(
+    session: _Session,
+    chat_id: int,
+    bot: Any,
+    lines: list[str],
+) -> None:
+    urls = _extract_google_urls(lines)
+    for oauth_url in urls:
+        if oauth_url in session.seen_urls:
+            continue
+        session.seen_urls.add(oauth_url)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🔐 Google sign-in\n\n"
+                "Tap the button below to open the clean Google OAuth page. "
+                "After Google gives you an authorization code, send it as:\n\n"
+                "/agy code YOUR_CODE"
+            ),
+            reply_markup=_controls_keyboard(oauth_url),
+        )
+
+    # Do not repeat the terminal-rendered/corrupted version of a Google URL once
+    # we have extracted it into a proper Telegram button.
+    display_lines = [line for line in lines if not _extract_google_urls([line])]
+    for chunk in _chunks(display_lines):
+        await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=_controls_keyboard())
+
+
 async def _pump(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = _sessions[user_id]
     consecutive_errors = 0
@@ -122,12 +199,12 @@ async def _pump(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) 
             session.cursor = int(data.get("cursor", session.cursor) or session.cursor)
             events = data.get("events", [])
             lines = [str(event.get("text", "")) for event in events if isinstance(event, dict)]
-            for chunk in _chunks(lines):
-                await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=_controls_keyboard())
+            await _send_console_lines(session, chat_id, context.bot, lines)
             consecutive_errors = 0
             if not bool(data.get("running", False)):
-                await context.bot.send_message(chat_id=chat_id, text="AGY console stopped. Send /agy to start it again.")
+                await context.bot.send_message(chat_id=chat_id, text="AGY console stopped. Plane Alerts notifications resumed.")
                 _sessions.pop(user_id, None)
+                set_agy_console_active(user_id, False)
                 return
         except asyncio.CancelledError:
             raise
@@ -147,6 +224,7 @@ async def _pump(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) 
 
 async def _drop_local_session(user_id: int) -> None:
     session = _sessions.pop(user_id, None)
+    set_agy_console_active(user_id, False)
     if session and session.task and not session.task.done():
         session.task.cancel()
 
@@ -158,6 +236,16 @@ async def _send_terminal_control(user_id: int, key: str) -> None:
     if payload is None:
         raise ValueError(f"Unsupported terminal control: {key}")
     await _request("POST", "/console/input", json={"text": payload})
+
+
+async def _send_code(user_id: int, code: str) -> None:
+    if user_id not in _sessions:
+        raise RuntimeError("AGY console is not connected")
+    code = code.strip()
+    if not code:
+        raise ValueError("Authorization code is empty")
+    # The worker appends the terminal newline; only the code itself is sent.
+    await _request("POST", "/console/input", json={"text": code})
 
 
 async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -173,6 +261,21 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     action = (context.args[0].lower() if context.args else "start")
+
+    if action == "code":
+        code = " ".join(context.args[1:]).strip()
+        if not code:
+            await message.reply_text("Use: /agy code YOUR_AUTHORIZATION_CODE")
+            return
+        try:
+            await _send_code(user.id, code)
+            await message.reply_text("Authorization code sent to Antigravity.", reply_markup=_controls_keyboard())
+        except RuntimeError:
+            await message.reply_text("AGY console is not connected. Send /agy first.")
+        except Exception as exc:
+            logger.exception("Could not send AGY authorization code")
+            await message.reply_text(f"Could not send authorization code ({type(exc).__name__}).")
+        return
 
     if action in TERMINAL_CONTROLS:
         try:
@@ -190,7 +293,7 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _request("POST", "/console/stop")
         finally:
             await _drop_local_session(user.id)
-        await message.reply_text("AGY console stopped.")
+        await message.reply_text("AGY console stopped. Plane Alerts notifications resumed.")
         return
 
     if action == "status":
@@ -222,18 +325,16 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # Repeating /agy must be idempotent. If this Telegram process is already
-    # pumping the console, don't restart/re-attach it and don't repeat the long
-    # connection banner. This also avoids resetting the output cursor.
     active = _sessions.get(user.id)
     if active is not None:
         try:
             state = await _request("GET", "/console/output", params={"cursor": active.cursor})
             if bool(state.get("running", False)):
+                set_agy_console_active(user.id, True)
                 seconds = state.get("seconds_since_output")
                 suffix = f" Last AGY output: {seconds}s ago." if seconds is not None else ""
                 await message.reply_text(
-                    "AGY console is already connected. I’m still forwarding Antigravity output here."
+                    "AGY console is already connected. Plane Alerts notifications are muted while you are here."
                     + suffix
                     + " Use /agy stop to disconnect.",
                     reply_markup=_controls_keyboard(),
@@ -252,18 +353,18 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     session = _Session(cursor=0)
     _sessions[user.id] = session
+    set_agy_console_active(user.id, True)
     await message.reply_text(
-        "AGY console connected. The Google sign-in URL and authorization-code prompt will appear here automatically. "
-        "Use the ↵ Enter button whenever the terminal asks you to press Enter. When Antigravity asks for the code, "
-        "paste only that code into this chat. Use /agy stop to disconnect.",
+        "AGY console connected. Plane Alerts notifications are muted until /agy stop. "
+        "Use ↵ Enter for terminal Enter. I’ll send the Google OAuth URL separately as a clean button. "
+        "When Google gives you the code, send /agy code YOUR_CODE.",
         reply_markup=_controls_keyboard(),
     )
 
     events = data.get("events", [])
     lines = [str(event.get("text", "")) for event in events if isinstance(event, dict)]
     session.cursor = int(data.get("cursor", 0) or 0)
-    for chunk in _chunks(lines):
-        await message.reply_text(chunk, reply_markup=_controls_keyboard())
+    await _send_console_lines(session, message.chat_id, context.bot, lines)
     session.task = asyncio.create_task(_pump(user.id, message.chat_id, context), name=f"agy-console-{user.id}")
 
 
@@ -273,12 +374,12 @@ async def _agy_control_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.effective_user
     if query is None or user is None:
         return
-    await query.answer()
     if not await _authorized(user.id):
         await query.answer("Not authorized", show_alert=True)
         return
     data = query.data or ""
     if not data.startswith("agy:key:"):
+        await query.answer()
         return
     key = data.split(":", 2)[2]
     try:
