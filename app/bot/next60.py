@@ -67,10 +67,7 @@ def _adsb_url(doc: dict[str, Any]) -> str | None:
 
 
 def _aircraft_label(doc: dict[str, Any]) -> str:
-    aircraft_type = str(doc.get("aircraft_type") or "").strip().upper()
-    if aircraft_type:
-        return aircraft_type
-    return _identity(doc) or "Aircraft"
+    return str(doc.get("aircraft_type") or "").strip().upper()
 
 
 def _distance_text(doc: dict[str, Any]) -> str:
@@ -94,7 +91,9 @@ def _eta_text(now: datetime, doc: dict[str, Any]) -> str:
 def _compact_row(now: datetime, doc: dict[str, Any]) -> str:
     type_label = html.escape(_aircraft_label(doc))
     callsign = html.escape(_identity(doc) or "Unknown")
-    return f"✈️ <b>{type_label}</b> · {callsign} · {_eta_text(now, doc)} · {_distance_text(doc)}"
+    if type_label:
+        return f"✈️ <b>{type_label}</b> · {callsign} · {_eta_text(now, doc)} · {_distance_text(doc)}"
+    return f"✈️ <b>{callsign}</b> · {_eta_text(now, doc)} · {_distance_text(doc)}"
 
 
 def _detail_text(now: datetime, doc: dict[str, Any]) -> str:
@@ -257,6 +256,16 @@ async def _history_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
 
 
 async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
+    type_cache: dict[str, str] = {}
+    try:
+        # The monitor already learns aircraft type from free ADS-B providers.
+        # Reuse that bounded in-memory cache instead of making another network call.
+        from app.worker.monitor import get_provider_manager
+
+        type_cache = dict(getattr(get_provider_manager(), "_type_cache", {}) or {})
+    except Exception:
+        type_cache = {}
+
     cursor = get_db()["approach_states"].find(
         {
             "user_id": user_id,
@@ -282,11 +291,13 @@ async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
             continue
         if eta_s < 0 or eta_s > 3600:
             continue
-        callsign = str(state.get("route_callsign") or state.get("aircraft_icao24") or "Unknown").upper()
+        icao = str(state.get("aircraft_icao24") or "").lower().strip()
+        callsign = str(state.get("route_callsign") or icao or "Unknown").upper()
+        aircraft_type = str(state.get("aircraft_type") or type_cache.get(icao) or "").upper().strip()
         docs.append({
             "callsign": callsign,
-            "aircraft_icao24": state.get("aircraft_icao24"),
-            "aircraft_type": state.get("aircraft_type"),
+            "aircraft_icao24": icao,
+            "aircraft_type": aircraft_type,
             "predicted_cpa_at": now + timedelta(seconds=eta_s),
             "prediction_horizon_s": eta_s,
             "predicted_closest_km": state.get("projected_closest_km"),
