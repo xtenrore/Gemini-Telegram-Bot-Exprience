@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnome-keyring \
     libsecret-tools \
     procps \
+    util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -48,7 +49,10 @@ esac
 exec "$REAL" --model "${AGY_MODEL:-gemini-3.1-pro-high}" "$@"
 SH
 
-RUN agy --version
+# `script` is intentionally required: it gives the interactive AGY TUI a real
+# controlling terminal even though Railway itself is headless. Without it AGY
+# can stay alive but never render the SSH OAuth URL into the Telegram bridge.
+RUN command -v script && agy --version
 
 COPY . .
 RUN chmod +x /app/scripts/agy-worker-entrypoint.sh /app/scripts/agy_record_finding.py
