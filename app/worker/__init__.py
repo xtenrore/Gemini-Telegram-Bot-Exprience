@@ -9,10 +9,17 @@ if "pytest" not in sys.modules:
 
     install_reliability_guards()
 
-    # Install after the general reliability guards so this destination-aware
-    # evaluator is the final RouteHistoryService implementation used by the
-    # live monitor. It prevents straight-line CPA false positives from arrivals
-    # that are about to turn toward a known destination airport.
+    # Install the existing destination adapters first, then the v2 guard which
+    # moves route-network work off the live alert path and catches preterminal
+    # airport turns that the original terminal-only geometry could miss.
     from app.intelligence.route_guard import install_route_guard
+    from app.intelligence.route_guard_v2 import install_route_guard_v2
 
     install_route_guard()
+    install_route_guard_v2()
+
+    # Final hot-path protection: cap individual provider latency and prevent
+    # stale ADS-B positions from creating brand-new approach alerts.
+    from app.worker.critical_timing import install_critical_timing_guards
+
+    install_critical_timing_guards()
