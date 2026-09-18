@@ -12,7 +12,7 @@ mkdir -p \
   "$XDG_DATA_HOME/keyrings" \
   "$XDG_CONFIG_HOME" \
   "$XDG_CACHE_HOME" \
-  "$STATE_DIR/prediction-lab"
+  "$STATE_DIR/prediction-lab/context"
 
 if [[ -z "${AGY_KEYRING_PASSWORD:-}" ]]; then
   echo "FATAL: AGY_KEYRING_PASSWORD is required so the persistent Linux Secret Service can be unlocked after a Railway restart." >&2
@@ -48,16 +48,17 @@ export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
 # Seed first-launch choices directly on the persistent volume so a phone-only
 # user does not have to navigate AGY's theme/rendering/workspace-trust wizard.
-# The workspace is this dedicated Plane Alerts worker image at /app.
-# Paid AI-credit overages remain forcibly disabled.
+# Also arm the persisted supervisor when AGY_GOAL_ENABLED=true.  Importantly we
+# preserve a future next_run_at so a Railway restart cannot bypass a quota wait.
 python - <<'PY'
 import json, os
 from pathlib import Path
+
 home = Path(os.environ['HOME'])
-path = home / '.gemini' / 'antigravity-cli' / 'settings.json'
-path.parent.mkdir(parents=True, exist_ok=True)
+settings_path = home / '.gemini' / 'antigravity-cli' / 'settings.json'
+settings_path.parent.mkdir(parents=True, exist_ok=True)
 try:
-    data = json.loads(path.read_text())
+    data = json.loads(settings_path.read_text())
 except Exception:
     data = {}
 data.pop('modelProvider', None)
@@ -70,9 +71,35 @@ trusted = list(data.get('trustedWorkspaces') or [])
 if '/app' not in trusted:
     trusted.append('/app')
 data['trustedWorkspaces'] = trusted
-tmp = path.with_suffix('.tmp')
+tmp = settings_path.with_suffix('.tmp')
 tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-tmp.replace(path)
+tmp.replace(settings_path)
+
+state_dir = Path(os.environ.get('AGY_STATE_DIR', '/agy-state'))
+supervisor_path = state_dir / 'prediction-lab' / 'supervisor.json'
+supervisor_path.parent.mkdir(parents=True, exist_ok=True)
+try:
+    supervisor = json.loads(supervisor_path.read_text())
+except Exception:
+    supervisor = {}
+enable = os.environ.get('AGY_GOAL_ENABLED', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+if enable:
+    was_enabled = bool(supervisor.get('enabled', False))
+    supervisor['enabled'] = True
+    goal = os.environ.get('AGY_GOAL', '').strip()
+    if goal:
+        supervisor['goal'] = goal
+    if not was_enabled:
+        supervisor['next_run_at'] = 0
+    stmp = supervisor_path.with_suffix('.tmp')
+    stmp.write_text(json.dumps(supervisor, indent=2, sort_keys=True))
+    stmp.replace(supervisor_path)
 PY
+
+# Parent-side bridge keeps Mongo credentials. AGY itself never receives them.
+# It refreshes redacted truth every 30s and publishes findings every 3s.
+python /app/scripts/agy_bridge_daemon.py &
+BRIDGE_PID=$!
+echo "Prediction Lab bridge started pid=$BRIDGE_PID"
 
 exec uvicorn app.agy_worker_ext:app --host 0.0.0.0 --port "${PORT:-8090}" --workers 1
