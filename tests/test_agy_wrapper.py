@@ -7,6 +7,9 @@ def test_agy_dockerfile_installs_script_and_wraps_interactive_sessions():
     assert "script -qefc" in text
     assert 'if [[ "$arg" == "-p" || "$arg" == "--prompt" ]]' in text
     assert 'exec "$REAL" --model "$MODEL" "$@"' in text
+    assert 'stty rows "$LINES" cols "$COLUMNS" <&0' in text
+    assert 'COLUMNS="${COLUMNS:-120}"' in text
+    assert 'LINES="${LINES:-40}"' in text
 
 
 def test_agy_wrapper_keeps_paid_api_key_fallback_disabled():
