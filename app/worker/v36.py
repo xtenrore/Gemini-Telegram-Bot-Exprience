@@ -84,6 +84,17 @@ def _promote_priority_region(region_key: str, now_mono: float) -> None:
         snapshot.hot_until_mono = max(snapshot.hot_until_mono, now_mono + v35.HOT_HOLD_S)
 
 
+def _record_users_processed(users: list[dict[str, Any]], evaluation_started_mono: float) -> None:
+    """Anchor delay to evaluation start, not completion.
+
+    Provider/network latency is work time, not extra cooldown. If a supposedly
+    five-second evaluation takes nine seconds, the next cycle should be eligible
+    immediately rather than waiting another five seconds after completion.
+    """
+    for user in users:
+        _last_user_processed_mono[int(user["user_id"])] = evaluation_started_mono
+
+
 async def _record_v36_metrics(
     *,
     region_count: int,
@@ -178,6 +189,7 @@ async def _monitor_cycle_v36() -> None:
             radius_nm=region.radius_nm,
         )
 
+        evaluation_started_mono = time.monotonic()
         try:
             sent, poll = await v35._process_shared_region(
                 active_region,
@@ -190,9 +202,7 @@ async def _monitor_cycle_v36() -> None:
             provider_queries += poll.provider_queries
             cache_hits += int(poll.cache_hit)
             processed_users += len(due_users)
-            completed_at = time.monotonic()
-            for user in due_users:
-                _last_user_processed_mono[int(user["user_id"])] = completed_at
+            _record_users_processed(due_users, evaluation_started_mono)
         except Exception:
             logger.exception(
                 "v4_shared_region_failed region=%s users=%d priority=%s",
