@@ -69,3 +69,14 @@ def test_priority_region_promotion_forces_hot_window(monkeypatch):
     monkeypatch.setattr(v36.v35._shared_poller, "_snapshots", {"r1": snapshot})
     v36._promote_priority_region("r1", 100.0)
     assert snapshot.hot_until_mono == 100.0 + v36.v35.HOT_HOLD_S
+
+
+def test_processing_delay_is_measured_from_evaluation_start_not_completion(monkeypatch):
+    monkeypatch.setattr(v36, "_last_user_processed_mono", {})
+    user = {"user_id": 42, "admin_control": {"delay_seconds": 5}}
+
+    # Regression: an 11-second provider cycle used to store completion=111,
+    # making the user wait until 116. The five-second cadence must be anchored
+    # to start=100, so at completion the user is already due again.
+    v36._record_users_processed([user], 100.0)
+    assert v36._is_due(user, 111.0) is True
