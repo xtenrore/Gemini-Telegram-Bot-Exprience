@@ -1,4 +1,4 @@
-"""Plane? v3.8 aircraft spotting intelligence, monochrome UI, Telegram-native map, bot, and web server."""
+"""Plane? v3.8 aircraft spotting intelligence, monochrome UI, bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +35,7 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info(
-        "Integrated ADS-B worker enabled: base interval=%ds, v3.6 priority-aware shared polling + v3.7 Telegram satellite map + v3.8 monochrome UI active",
+        "Integrated ADS-B worker enabled: base interval=%ds, v3.6 priority-aware shared polling + v3.8 monochrome UI active",
         settings.poll_interval_seconds,
     )
     first_cycle_confirmed = False
@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
     configure_secure_logging()
-    logger.info("Initializing Plane? v3.8 Monochrome UI + Telegram Live Map + Spotting Intelligence...")
+    logger.info("Initializing Plane? v3.8 Monochrome UI + Spotting Intelligence...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
@@ -174,7 +174,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Plane? Spotting Intelligence",
-    description="Deterministic real-time ADS-B spotting intelligence with Telegram-native satellite mapping and monochrome UI",
+    description="Deterministic real-time ADS-B spotting intelligence with a monochrome Telegram UI",
     version="3.8.0",
     lifespan=lifespan,
 )
@@ -252,9 +252,6 @@ async def health_check() -> dict[str, Any]:
             "weather_provider": "Open-Meteo",
             "shared_adaptive_adsb_polling": True,
             "priority_admin_controls": True,
-            "telegram_satellite_map": True,
-            "telegram_map_extra_adsb_polling": False,
-            "browser_live_map": False,
             "monochrome_ui": True,
         },
         "python_version": platform.python_version(),
@@ -291,8 +288,6 @@ async def stats() -> dict[str, Any]:
         "discovery_poll_interval_seconds": 15,
         "hot_region_poll_interval_seconds": 5,
         "priority_hot_interval_seconds": 5,
-        "telegram_map_extra_provider_requests": 0,
-        "telegram_map_uses_monitor_cycle": True,
         "default_radius_km": settings.default_radius_km,
         "cooldown_minutes": settings.cooldown_minutes,
         "cycle_stats": get_cycle_stats(),
