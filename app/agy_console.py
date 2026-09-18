@@ -12,10 +12,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -29,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.0
 MAX_TELEGRAM_CHUNK = 3500
+
+# Telegram cannot send a blank message, so a terminal UI waiting for a bare
+# Enter key would otherwise be impossible to operate from the chat.  Keep the
+# mapping deliberately tiny: these are terminal keystrokes, never shell text.
+TERMINAL_CONTROLS: dict[str, str] = {
+    "enter": "\r",
+}
 
 
 @dataclass
@@ -50,6 +58,12 @@ def _url(path: str) -> str:
 
 def _headers() -> dict[str, str]:
     return {"X-AGY-Token": settings.agy_worker_token}
+
+
+def _controls_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("↵ Enter", callback_data="agy:key:enter")]]
+    )
 
 
 async def _authorized(user_id: int) -> bool:
@@ -109,7 +123,7 @@ async def _pump(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) 
             events = data.get("events", [])
             lines = [str(event.get("text", "")) for event in events if isinstance(event, dict)]
             for chunk in _chunks(lines):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
+                await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=_controls_keyboard())
             consecutive_errors = 0
             if not bool(data.get("running", False)):
                 await context.bot.send_message(chat_id=chat_id, text="AGY console stopped. Send /agy to start it again.")
@@ -137,6 +151,15 @@ async def _drop_local_session(user_id: int) -> None:
         session.task.cancel()
 
 
+async def _send_terminal_control(user_id: int, key: str) -> None:
+    if user_id not in _sessions:
+        raise RuntimeError("AGY console is not connected")
+    payload = TERMINAL_CONTROLS.get(key)
+    if payload is None:
+        raise ValueError(f"Unsupported terminal control: {key}")
+    await _request("POST", "/console/input", json={"text": payload})
+
+
 async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     message = update.message
@@ -150,6 +173,17 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     action = (context.args[0].lower() if context.args else "start")
+
+    if action in TERMINAL_CONTROLS:
+        try:
+            await _send_terminal_control(user.id, action)
+            await message.reply_text("↵ Enter sent to Antigravity.", reply_markup=_controls_keyboard())
+        except RuntimeError:
+            await message.reply_text("AGY console is not connected. Send /agy first.")
+        except Exception as exc:
+            logger.exception("Could not send AGY terminal control")
+            await message.reply_text(f"Could not send Enter ({type(exc).__name__}).")
+        return
 
     if action in {"stop", "exit", "close"}:
         try:
@@ -201,7 +235,8 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await message.reply_text(
                     "AGY console is already connected. I’m still forwarding Antigravity output here."
                     + suffix
-                    + " Use /agy stop to disconnect."
+                    + " Use /agy stop to disconnect.",
+                    reply_markup=_controls_keyboard(),
                 )
                 return
         except Exception:
@@ -219,15 +254,41 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _sessions[user.id] = session
     await message.reply_text(
         "AGY console connected. The Google sign-in URL and authorization-code prompt will appear here automatically. "
-        "When Antigravity asks for the code, paste only that code into this chat. Use /agy stop to disconnect."
+        "Use the ↵ Enter button whenever the terminal asks you to press Enter. When Antigravity asks for the code, "
+        "paste only that code into this chat. Use /agy stop to disconnect.",
+        reply_markup=_controls_keyboard(),
     )
 
     events = data.get("events", [])
     lines = [str(event.get("text", "")) for event in events if isinstance(event, dict)]
     session.cursor = int(data.get("cursor", 0) or 0)
     for chunk in _chunks(lines):
-        await message.reply_text(chunk)
+        await message.reply_text(chunk, reply_markup=_controls_keyboard())
     session.task = asyncio.create_task(_pump(user.id, message.chat_id, context), name=f"agy-console-{user.id}")
+
+
+async def _agy_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    query = update.callback_query
+    user = update.effective_user
+    if query is None or user is None:
+        return
+    await query.answer()
+    if not await _authorized(user.id):
+        await query.answer("Not authorized", show_alert=True)
+        return
+    data = query.data or ""
+    if not data.startswith("agy:key:"):
+        return
+    key = data.split(":", 2)[2]
+    try:
+        await _send_terminal_control(user.id, key)
+        await query.answer("Enter sent")
+    except RuntimeError:
+        await query.answer("AGY console is not connected", show_alert=True)
+    except Exception:
+        logger.exception("Could not send AGY callback terminal control")
+        await query.answer("Could not send key", show_alert=True)
 
 
 async def handle_agy_text_if_active(update: Update) -> bool:
@@ -260,4 +321,5 @@ async def _agy_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def register_agy_console_handlers(app: Application) -> None:
     """Register the private console ahead of normal command/text handlers."""
     app.add_handler(CommandHandler("agy", cmd_agy), group=-20)
+    app.add_handler(CallbackQueryHandler(_agy_control_callback, pattern=r"^agy:key:"), group=-20)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _agy_text_handler), group=-20)
