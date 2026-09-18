@@ -18,8 +18,15 @@ if "pytest" not in sys.modules:
     install_route_guard()
     install_route_guard_v2()
 
-    # Final hot-path protection: cap individual provider latency and prevent
-    # stale ADS-B positions from creating brand-new approach alerts.
+    # Final ADS-B hot-path protection: cap individual provider latency and
+    # prevent stale positions from creating brand-new approach alerts.
     from app.worker.critical_timing import install_critical_timing_guards
 
     install_critical_timing_guards()
+
+    # Telegram must be the first external side effect once an alert qualifies.
+    # Durable snapshot/history writes continue in bounded background tasks so a
+    # slow MongoDB operation cannot make a physically correct alert arrive late.
+    from app.worker.notification_fastpath import install_notification_fastpath
+
+    install_notification_fastpath()
