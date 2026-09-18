@@ -131,6 +131,12 @@ async def _pump(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) 
         await asyncio.sleep(POLL_SECONDS)
 
 
+async def _drop_local_session(user_id: int) -> None:
+    session = _sessions.pop(user_id, None)
+    if session and session.task and not session.task.done():
+        session.task.cancel()
+
+
 async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     message = update.message
@@ -149,9 +155,7 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             await _request("POST", "/console/stop")
         finally:
-            session = _sessions.pop(user.id, None)
-            if session and session.task and not session.task.done():
-                session.task.cancel()
+            await _drop_local_session(user.id)
         await message.reply_text("AGY console stopped.")
         return
 
@@ -184,6 +188,26 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # Repeating /agy must be idempotent. If this Telegram process is already
+    # pumping the console, don't restart/re-attach it and don't repeat the long
+    # connection banner. This also avoids resetting the output cursor.
+    active = _sessions.get(user.id)
+    if active is not None:
+        try:
+            state = await _request("GET", "/console/output", params={"cursor": active.cursor})
+            if bool(state.get("running", False)):
+                seconds = state.get("seconds_since_output")
+                suffix = f" Last AGY output: {seconds}s ago." if seconds is not None else ""
+                await message.reply_text(
+                    "AGY console is already connected. I’m still forwarding Antigravity output here."
+                    + suffix
+                    + " Use /agy stop to disconnect."
+                )
+                return
+        except Exception:
+            logger.warning("Could not verify existing AGY Telegram session; reattaching")
+        await _drop_local_session(user.id)
+
     try:
         data = await _request("POST", "/console/start")
     except Exception as exc:
@@ -191,15 +215,11 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text(f"Could not start AGY console ({type(exc).__name__}).")
         return
 
-    old = _sessions.pop(user.id, None)
-    if old and old.task and not old.task.done():
-        old.task.cancel()
-
     session = _Session(cursor=0)
     _sessions[user.id] = session
     await message.reply_text(
-        "AGY console connected. Anything you type now is sent only to Antigravity, not to the Railway shell. "
-        "Use /agy stop to disconnect. The Google sign-in URL/code prompts will appear here."
+        "AGY console connected. The Google sign-in URL and authorization-code prompt will appear here automatically. "
+        "When Antigravity asks for the code, paste only that code into this chat. Use /agy stop to disconnect."
     )
 
     events = data.get("events", [])
@@ -219,7 +239,7 @@ async def handle_agy_text_if_active(update: Update) -> bool:
     if user.id not in _sessions:
         return False
     if not await _authorized(user.id):
-        _sessions.pop(user.id, None)
+        await _drop_local_session(user.id)
         return False
     try:
         await _request("POST", "/console/input", json={"text": message.text})
