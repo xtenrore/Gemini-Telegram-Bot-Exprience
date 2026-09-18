@@ -24,7 +24,15 @@ def test_google_oauth_button_uses_clean_url():
     markup = _controls_keyboard(url)
     assert markup.inline_keyboard[0][0].text == "🔐 Open Google sign-in"
     assert markup.inline_keyboard[0][0].url == url
-    assert markup.inline_keyboard[1][0].callback_data == "agy:key:enter"
+    callbacks = {
+        button.callback_data
+        for row in markup.inline_keyboard[1:]
+        for button in row
+        if button.callback_data
+    }
+    assert "agy:key:enter" in callbacks
+    assert "agy:key:up" in callbacks
+    assert "agy:key:down" in callbacks
 
 
 def test_agy_console_state_temporarily_mutes_monitor_notifications():
