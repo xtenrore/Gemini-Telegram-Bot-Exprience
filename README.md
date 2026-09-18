@@ -1,130 +1,168 @@
 # Plane Alerts
 
-**Real-time aircraft spotting alerts built around trajectory, route context, and measured prediction accuracy.**
+**Aircraft spotting alerts that try to predict the pass, not just detect the plane.**
 
-### ✈️ Want to try Plane Alerts?
+Plane Alerts watches live ADS-B traffic around your spotting location and asks a stricter question than a normal proximity bot:
 
-**Message [@planebotnotifierbot](https://t.me/planebotnotifierbot) on Telegram to get started.**
+> **Is this aircraft actually likely to pass close enough to be worth getting the camera ready?**
 
-Plane Alerts watches live ADS-B traffic around saved spotting locations and tries to answer the question that matters: **is this aircraft actually going to pass close enough to photograph?**
+It combines live trajectory geometry, recent flight-number route history, prediction confidence, photography conditions, and a continuous Prediction Lab that compares forecasts with what actually happened.
 
-It does not alert simply because an aircraft is nearby, pointed in roughly the right direction, or flying to a nearby airport. The system continuously evaluates motion, projected closest approach, route behaviour, prediction confidence, and what happened after earlier predictions.
+The current production generation is **Plane Alerts v4.0**.
 
-The current generation is **Plane Alerts v4.0**.
+### Try it
 
-## v4.0 — Prediction Lab
+Message **[@planebotnotifierbot](https://t.me/planebotnotifierbot)** on Telegram and run `/start`.
 
-v4.0 adds a continuous prediction-audit system around the existing spotting engine.
+---
 
-Plane Alerts records what it expected to happen and compares that with what actually happened later. The Prediction Lab focuses on the parts of an aircraft alert system that are easiest to get subtly wrong:
+## What v4.0 adds
 
-- ETA accuracy and stability
-- projected closest point of approach
+### Prediction Lab
+
+Every useful prediction can become an experiment. Plane Alerts records what it expected, waits for reality, and then measures the difference.
+
+The lab focuses on:
+
+- ETA accuracy and ETA stability
+- projected closest point of approach (CPA)
 - false or late alert cancellations
-- route-history mistakes
-- alert qualify/cancel oscillation
 - missed close passes
-- Next 60 Minutes expectations versus observed routes
+- qualify/cancel oscillation
+- route-history mistakes
+- 30–60 minute forecast calibration
+- regressions introduced by new prediction changes
 
-A separate Railway worker runs the Antigravity investigation loop. It receives a redacted production snapshot, investigates prediction failures, and writes findings into a durable handoff queue for independent verification before any production change is accepted.
+Missing ADS-B coverage is **not** counted as a successful prediction and is **not** counted as a miss. It is stored as unresolved coverage.
 
-AGY findings are **hypotheses, not automatic fixes**. A finding must be checked against current telemetry and source code, reproduced where possible, and protected by regression or replay tests before a change is promoted.
+### Next 60 Minutes
 
-### No paid runtime AI credits
+Use either:
 
-The aircraft prediction engine does not depend on paid AI APIs.
+- `/next60`
+- `/forecast`
 
-The Antigravity worker uses the authenticated Google AI Pro account configuration with paid-credit overages disabled. It does not fall back to a paid Gemini API key, Claude, GPT, or another paid model when account quota is exhausted.
+The response is split into **0–15**, **15–30**, and **30–60 minute** sections.
 
-If AI is unavailable, the aircraft alert system continues working because trajectory, CPA, ETA, pass qualification, cancellation timing, route checks, sun position, framing, and other physical decisions are performed by deterministic or statistical code.
+Short-range live geometry remains the authority. Longer-range entries are history/shadow based and deliberately use wider timing windows instead of pretending to know an exact ETA before the evidence supports one.
 
-## How an alert is decided
+### Europe Sentinel Network
 
-For each relevant aircraft, Plane Alerts keeps a short bounded trajectory history and evaluates:
+Prediction Lab is no longer limited to the saved locations of real users.
 
-- current horizontal and slant distance
-- whether distance is decreasing or increasing
-- heading and groundspeed consistency
-- recent turn rate and acceleration
-- vertical behaviour
+A shadow-only sentinel network rotates through eight European traffic regions:
+
+- Istanbul / Marmara
+- London / South East
+- Frankfurt / Rhine-Main
+- Paris / Île-de-France
+- Amsterdam / Benelux
+- Madrid / Central Spain
+- Rome / Central Italy
+- Vienna / Central Europe
+
+The network makes **one free public ADS-B query every 30 seconds in total**, rotating the region and provider. It does not create user alerts.
+
+This gives Prediction Lab independent traffic from different route structures and ATC environments without multiplying provider traffic by the number of users.
+
+### Adversarial virtual observers
+
+The lab also creates locations specifically designed to expose prediction failures.
+
+When an observed route makes a meaningful turn, Plane Alerts can place a virtual observer farther along the aircraft's **pre-turn course**. That creates a difficult replay case:
+
+```text
+aircraft appears to continue toward virtual observer
+                    ↓
+              route turns away
+                    ↓
+actual aircraft never enters the alert radius
+```
+
+These cases are useful for catching the classic false alert where a straight-line predictor thinks a plane is coming toward the observer even though it is about to turn for an airport or route transition.
+
+They remain shadow-only and are fed into the same Prediction Lab audit data as real outcomes.
+
+---
+
+## Alert engine
+
+Plane Alerts does not qualify a pass from current distance, destination, or heading alone.
+
+For relevant aircraft it maintains bounded recent motion history and evaluates information such as:
+
+- current distance
+- distance trend
+- heading and groundspeed
+- turn rate
+- acceleration/deceleration
+- vertical rate
 - projected path
 - horizontal and slant CPA
 - time to CPA
-- ADS-B position age and update quality
-- prediction confidence
+- ADS-B age/staleness
+- update consistency
+- trajectory confidence
 - recent route behaviour for the same flight number
 
-The alert engine can classify an aircraft as **Approaching**, **Passing nearby**, **Moving away**, **Will not approach**, **Prediction uncertain**, **Turning away**, **Trajectory changed**, or **Passed**.
+Possible states include **Approaching**, **Passing nearby**, **Moving away**, **Will not approach**, **Prediction uncertain**, **Turning away**, **Trajectory changed**, and **Passed**.
 
-An active alert is continuously recalculated. If the evidence changes, the message can be updated or cancelled instead of continuing a countdown that no longer makes sense.
+Active alerts are recalculated continuously. A prediction that stops qualifying can be updated or cancelled instead of continuing a countdown to a pass that will never happen.
 
 ## Flight-number route history
 
-Historical routing is keyed by the **flight number / transmitted flight callsign**, not by aircraft registration.
+Historical behaviour is keyed by the **flight number / transmitted callsign**, not by aircraft registration.
 
-That matters because the same scheduled flight can be operated by different airframes while still following a recognisable route pattern. Plane Alerts stores bounded recent route traces and can compare today's developing path with recent flights while keeping live geometry authoritative.
+For example, the useful identity for a recurring route is the flight such as `TK1017`, not whichever tail number happens to operate it today.
 
-Route history is supporting evidence, not permission for an old route to blindly override what the aircraft is doing now.
-
-## Next 60 Minutes
-
-v4.0 introduces a shadow-learning path for longer-range spotting expectations.
-
-The system can build an expectation from recent flight-number route timing and later compare it with the route actually observed today. Longer horizons are deliberately treated with more uncertainty than live CPA prediction.
-
-Missing ADS-B coverage is recorded as **unresolved coverage** rather than being counted as either a correct forecast or a miss.
-
-The 30–60 minute system is measurement-first: it should earn trust from recorded outcomes before it is allowed to behave like a precise live ETA system.
+Recent routes can help identify recurring turns and decision points, but historical data is supporting evidence rather than permission to ignore live geometry.
 
 ## Shared ADS-B polling
 
-Nearby users share regional aircraft snapshots instead of each user independently hitting the same ADS-B providers.
+Nearby users reuse shared regional aircraft snapshots rather than each user independently querying providers.
 
-The polling layer:
+The production poller:
 
-- groups compatible users into shared geographic regions
-- rotates public ADS-B sources
-- keeps OpenSky as a fallback rather than querying it on every cycle
-- reuses recent snapshots during brief upstream gaps
+- groups compatible users into shared regions
+- rotates free/public ADS-B sources
+- keeps OpenSky as a fallback rather than querying it every cycle
+- briefly reuses a previous non-empty snapshot during transient feed gaps
 - keeps active regions on a faster cadence
 - slows quiet discovery regions
-- bounds aircraft history in memory
+- keeps trajectory memory bounded
 
-This keeps the multi-user architecture efficient without sacrificing the fast updates needed for close approaches.
+The Europe Sentinel Network is separate and deliberately low-rate so Prediction Lab coverage does not turn into an API request storm.
+
+---
 
 ## Photography intelligence
 
-Plane Alerts includes a photography layer designed for aircraft spotting rather than generic camera advice.
-
-Depending on available data and the saved camera/lens profile, it can estimate or recommend:
+Plane Alerts also contains a deterministic aircraft-photography layer. Depending on available information and the saved camera/lens profile it can estimate or recommend:
 
 - shutter speed
 - aperture
 - Auto ISO limits
-- focal length / framing range
-- aircraft frame fill
-- clipping risk
+- focal length
+- frame fill and clipping risk
 - angular motion
-- lighting direction
-- sun position
-- atmospheric clarity
-- heat haze
+- sun position and lighting direction
+- haze / atmospheric clarity
 - upper-air conditions
-- contrail formation / persistence
+- contrail formation and persistence
 - useful shooting-window timing
 
-The physical calculations remain deterministic. AI may explain a result, but it is not the authority deciding whether an aircraft passes the observer.
+The same design rule applies here: physical calculations should continue working even if AI is unavailable.
 
-## Telegram
+---
 
-**Start here: [message @planebotnotifierbot](https://t.me/planebotnotifierbot) on Telegram.**
-
-Then use `/start` and follow the setup flow to choose your location, aircraft preferences, and spotting settings.
+## Telegram commands
 
 | Command | Purpose |
 | --- | --- |
-| `/start` | Set up Plane Alerts |
-| `/status` | Show the current monitoring setup |
+| `/start` | Initial Plane Alerts setup |
+| `/status` | Show monitoring status |
+| `/next60` | Show planes expected in the next 60 minutes |
+| `/forecast` | Alias for `/next60` |
 | `/location` | Set the spotting location |
 | `/preferences` | Configure aircraft and alert preferences |
 | `/camera` | Set the camera body |
@@ -134,26 +172,20 @@ Then use `/start` and follow the setup flow to choose your location, aircraft pr
 | `/spotting` | Open spotting tools |
 | `/help` | Show command help |
 
-The private AGY console is restricted separately and is not intended to expose a general-purpose host shell.
+The private `/agy` console is owner-only and is not a general-purpose host shell.
 
-## Production architecture
+---
 
-Production runs on Railway and uses MongoDB for persistent application and Prediction Lab state.
+## Prediction improvement loop
 
-The main application contains the FastAPI service, Telegram bot, shared ADS-B monitor, trajectory engine, route-history system, photography intelligence, and admin tooling.
-
-A separate **Plane-Alerts-AGY** Railway worker handles the Antigravity investigation loop and Prediction Lab bridge. Its production context is redacted before AGY receives it; database credentials and exact observer coordinates remain on the parent side.
-
-New AGY findings are persisted immediately and emitted as `CHATGPT_HANDOFF_JSON` records so an independent engineering task can process them later without needing to run at the same minute as AGY.
-
-## Reliability model
+Plane Alerts uses a separate **Plane-Alerts-AGY** Railway worker for prediction investigation.
 
 ```text
 Live ADS-B
    ↓
 Production predictor
    ↓
-Prediction snapshots
+Recorded expectation
    ↓
 Actual observed outcome
    ↓
@@ -161,18 +193,56 @@ Prediction Lab
    ↓
 AGY investigation
    ↓
-Durable finding handoff
+CHATGPT_HANDOFF_JSON
    ↓
 Independent verification
    ↓
 Regression / replay tests
    ↓
 Safer candidate change
-   ↓
-CI + deployment
 ```
 
-Serious prediction failures should become permanent regression cases so the same bug cannot quietly return later.
+AGY findings are **hypotheses, not automatic production fixes**. A suggested change is expected to be independently checked against telemetry and source code, reproduced where practical, and protected by tests before deployment.
+
+New findings are persisted immediately so a ChatGPT verification task does not need to start at exactly the same minute as the AGY investigation.
+
+### No paid AI credits
+
+Runtime aircraft prediction does not rely on paid AI APIs.
+
+The Antigravity worker is configured around the authenticated Google account with paid-credit overages disabled. It does not intentionally fall back to Claude, GPT, or paid Gemini API-key usage when account quota is exhausted.
+
+If the account quota is exhausted, the AGY supervisor waits for the quota refresh plus a safety delay rather than purchasing more inference.
+
+---
+
+## Production architecture
+
+Production runs on Railway with MongoDB persistence.
+
+The main service contains:
+
+- FastAPI health/admin API
+- Telegram bot
+- shared ADS-B monitor
+- deterministic trajectory/CPA engine
+- route-history system
+- photography intelligence
+- Next 60 Minutes user command
+- low-rate Europe Sentinel sampler
+
+The separate AGY worker contains:
+
+- Prediction Lab redacted context bridge
+- next-hour expectation/outcome evaluation
+- Europe Sentinel outcome evaluation
+- adversarial virtual-observer generation
+- Antigravity investigation loop
+- durable ChatGPT handoff
+
+Exact saved user coordinates and database credentials are kept out of the AGY model context.
+
+---
 
 ## Running locally
 
@@ -190,37 +260,29 @@ cp .env.example .env
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-The practical minimum is a Telegram bot token and MongoDB connection. ADS-B provider endpoints have defaults in the example environment file.
-
-| Variable | Used for |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot runtime |
-| `MONGO_URI` | MongoDB connection |
-| `DATABASE_NAME` | Database name |
-| `WEBHOOK_URL` | Optional Telegram webhook mode |
-| `WEBHOOK_SECRET` | Optional webhook verification |
-| `OPENSKY_1` ... `OPENSKY_5` | Optional OpenSky credentials |
-| `POLL_INTERVAL_SECONDS` | Base monitor interval |
-| `DEFAULT_RADIUS_KM` | Default spotting radius |
-
-See [`.env.example`](.env.example) for the full configuration.
+The practical minimum is a Telegram bot token and a MongoDB connection. Free/public ADS-B provider endpoints already have defaults in the project configuration.
 
 ## Project layout
 
 ```text
 app/
-  aircraft/       ADS-B providers and aircraft normalization
-  bot/            Telegram commands, callbacks and messages
-  intelligence/   trajectory, route history, camera and environment logic
-  photography/    spotting conditions and camera guidance
-  worker/         shared polling, matching and reliability systems
-  admin/          admin API and dashboard
+  aircraft/          ADS-B providers and aircraft normalization
+  bot/               Telegram commands and messages
+  intelligence/      trajectory, route-history and environment logic
+  photography/       camera and spotting guidance
+  worker/            shared production polling
+  sentinel_network.py
+  sentinel_shadow.py
+  next_hour_shadow.py
+  agy_prediction_bridge.py
 
-scripts/           Railway, AGY and verification helpers
-tests/             trajectory, replay, alert, provider and runtime tests
-docs/              focused technical documentation
-.github/workflows/ CI and deployment workflows
+scripts/              Railway / AGY helpers
+tests/                regression, trajectory, alert and Prediction Lab tests
+docs/                 technical notes
+.github/workflows/    CI and deployment workflows
 ```
+
+---
 
 ## Design principle
 
@@ -230,6 +292,6 @@ Runtime AI must never be the component that decides trajectory, CPA, ETA, pass/n
 
 ## Data limitations
 
-ADS-B data is observational. Upstream feeds can be delayed, incomplete, duplicated, stale, or temporarily wrong, and receiver coverage varies by region.
+ADS-B is observational data. Feeds can be delayed, incomplete, duplicated, stale, or temporarily wrong, and receiver coverage differs by region.
 
-Plane Alerts reduces those problems with stale-data rejection, bounded motion history, multiple providers, shared polling, confidence checks, route context, continuous outcome measurement, and replay/regression testing. It still avoids claiming certainty when the underlying evidence is incomplete.
+Plane Alerts therefore records uncertainty rather than silently turning missing data into success. Confidence checks, bounded motion history, multiple providers, route context, sentinel observations, replay cases, and measured outcomes are all intended to make the system improve without pretending that the underlying data is perfect.
