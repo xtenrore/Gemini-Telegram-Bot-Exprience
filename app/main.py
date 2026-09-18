@@ -1,4 +1,4 @@
-"""Plane? v3.8 aircraft spotting intelligence, monochrome UI, bot, and web server."""
+"""Plane Alerts v4.0 aircraft spotting intelligence, Prediction Lab, bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -21,10 +21,12 @@ from app.agy_console import register_agy_console_handlers
 from app.aircraft.api_keys import opensky_key_manager
 from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
+from app.bot.next60 import register_next60_handlers
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
 from app.logging_security import configure_secure_logging
 from app.photography.telegram import register_photography_handlers
+from app.sentinel_network import EUROPE_SENTINELS, run_sentinel_network
 from app.worker.monitor import get_cycle_stats, init_services
 from app.worker.v36 import run_monitor_cycle_v36 as run_monitor_cycle
 
@@ -36,7 +38,7 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info(
-        "Integrated ADS-B worker enabled: base interval=%ds, v3.6 priority-aware shared polling + v3.8 monochrome UI active",
+        "Integrated ADS-B worker enabled: base interval=%ds, shared polling + Plane Alerts v4.0 active",
         settings.poll_interval_seconds,
     )
     first_cycle_confirmed = False
@@ -71,10 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
     configure_secure_logging()
-    logger.info("Initializing Plane? v3.8 Monochrome UI + Spotting Intelligence...")
+    logger.info("Initializing Plane Alerts v4.0 Prediction Lab + Spotting Intelligence...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
+    sentinel_task: asyncio.Task | None = None
 
     async def _reconnect_db_loop() -> None:
         while True:
@@ -99,6 +102,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_services()
 
     monitor_task = asyncio.create_task(_monitor_loop(), name="aircraft-monitor")
+    sentinel_task = asyncio.create_task(run_sentinel_network(), name="prediction-lab-europe-sentinels")
+    logger.info("Prediction Lab Europe sentinel network enabled: regions=%d shadow_only=true", len(EUROPE_SENTINELS))
 
     bot_token = settings.telegram_bot_token.strip()
     if bot_token and bot_token != "your_bot_token_from_botfather":
@@ -109,6 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # ordinary Plane Alerts setup text.
             register_agy_console_handlers(telegram_app)
             register_handlers(telegram_app)
+            register_next60_handlers(telegram_app)
             register_photography_handlers(telegram_app)
             await telegram_app.initialize()
             await telegram_app.start()
@@ -117,10 +123,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     [
                         BotCommand("start", "Set up aircraft alerts"),
                         BotCommand("status", "Show monitoring status"),
+                        BotCommand("next60", "Planes expected in the next 60 minutes"),
+                        BotCommand("forecast", "Alias for the Next 60 Minutes forecast"),
                         BotCommand("location", "Set monitoring / shooting location"),
                         BotCommand("preferences", "Choose aircraft types"),
                         BotCommand("camera", "Set your camera body"),
-                        BotCommand("lens", "Set your aircraft lens"),
+                        BotCommand("lens", "Set the aircraft lens"),
                         BotCommand("photo", "Get live best-shot camera settings"),
                         BotCommand("conditions", "Show weather / sun / haze conditions"),
                         BotCommand("spotting", "Open Spotting Mode"),
@@ -152,7 +160,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    logger.info("Shutting down Plane? v3.8...")
+    logger.info("Shutting down Plane Alerts v4.0...")
     if telegram_app:
         try:
             if telegram_app.updater and telegram_app.updater.running:
@@ -162,10 +170,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as exc:
             logger.warning("Error stopping Telegram app: %s", exc)
 
-    for task in (monitor_task, db_reconnect_task):
+    for task in (monitor_task, sentinel_task, db_reconnect_task):
         if task and not task.done():
             task.cancel()
-    for task in (monitor_task, db_reconnect_task):
+    for task in (monitor_task, sentinel_task, db_reconnect_task):
         if task:
             try:
                 await task
@@ -179,9 +187,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="Plane? Spotting Intelligence",
-    description="Deterministic real-time ADS-B spotting intelligence with a monochrome Telegram UI",
-    version="3.8.0",
+    title="Plane Alerts",
+    description="Deterministic real-time ADS-B spotting intelligence with v4.0 Prediction Lab",
+    version="4.0.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -219,6 +227,7 @@ async def health_check() -> dict[str, Any]:
             bot_status = "stopped"
 
     worker_info: dict[str, Any] = {"status": "unknown"}
+    sentinel_info: dict[str, Any] = {"enabled": True, "regions": len(EUROPE_SENTINELS), "mode": "shadow-only"}
     try:
         doc = await system_status_col().find_one({"_id": "monitor_worker"})
         if doc:
@@ -226,7 +235,7 @@ async def health_check() -> dict[str, Any]:
             is_stale = (time.time() - last_time) > (settings.poll_interval_seconds * 4)
             worker_info = {
                 "status": "active" if not is_stale else "stale",
-                "version": doc.get("plane_version", "3.8.0"),
+                "version": doc.get("plane_version", "4.0.0"),
                 "total_cycles": doc.get("total_cycles", 0),
                 "last_cycle_duration_ms": doc.get("last_cycle_duration_ms", 0.0),
                 "seconds_since_last_cycle": round(time.time() - last_time, 1),
@@ -241,19 +250,32 @@ async def health_check() -> dict[str, Any]:
         else:
             stats = get_cycle_stats()
             if stats.get("total_cycles", 0) > 0:
-                worker_info = {"status": "active (in-process)", "version": "3.8.0", "total_cycles": stats.get("total_cycles", 0)}
+                worker_info = {"status": "active (in-process)", "version": "4.0.0", "total_cycles": stats.get("total_cycles", 0)}
+        sentinel_doc = await system_status_col().find_one({"_id": "prediction_lab_sentinels"})
+        if sentinel_doc:
+            sentinel_info.update({
+                "last_region": sentinel_doc.get("last_region"),
+                "last_provider": sentinel_doc.get("last_provider"),
+                "last_aircraft": sentinel_doc.get("last_aircraft", 0),
+                "last_points_stored": sentinel_doc.get("last_points_stored", 0),
+                "poll_interval_seconds": sentinel_doc.get("poll_interval_seconds", 30),
+            })
     except Exception:
         pass
 
     return {
         "status": "healthy" if db_ok else "degraded",
-        "version": "3.8.0",
+        "version": "4.0.0",
         "database_connected": db_ok,
         "bot_mode": bot_status,
         "uptime_seconds": round(time.time() - _server_start_time, 1),
         "worker": worker_info,
+        "sentinel_network": sentinel_info,
         "spotting_intelligence": {
             "deterministic_core": True,
+            "prediction_lab": True,
+            "next_60_shadow": True,
+            "europe_sentinel_shadow": True,
             "gemini_advisor_enabled": bool(settings.gemini_api_key.strip()),
             "weather_provider": "Open-Meteo",
             "shared_adaptive_adsb_polling": True,
@@ -286,7 +308,7 @@ async def stats() -> dict[str, Any]:
     except Exception:
         pass
     return {
-        "version": "3.8.0",
+        "version": "4.0.0",
         "active_users": active_users,
         "total_users": total_users,
         "poll_interval_seconds": settings.poll_interval_seconds,
@@ -298,6 +320,7 @@ async def stats() -> dict[str, Any]:
         "cooldown_minutes": settings.cooldown_minutes,
         "cycle_stats": get_cycle_stats(),
         "shared_polling": worker_metrics,
+        "prediction_lab_sentinel_regions": len(EUROPE_SENTINELS),
     }
 
 

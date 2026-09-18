@@ -7,6 +7,7 @@ import time
 
 from app.agy_prediction_bridge import build_context_snapshot, sync_findings_to_handoff
 from app.next_hour_shadow import update_next_hour_shadow
+from app.sentinel_shadow import update_sentinel_shadow
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("plane_alerts.agy_bridge_daemon")
@@ -14,11 +15,13 @@ logger = logging.getLogger("plane_alerts.agy_bridge_daemon")
 CONTEXT_INTERVAL_S = 30.0
 HANDOFF_INTERVAL_S = 3.0
 NEXT_HOUR_INTERVAL_S = 60.0
+SENTINEL_INTERVAL_S = 120.0
 
 
 def main() -> int:
     next_context = 0.0
     next_hour_audit = 0.0
+    next_sentinel_audit = 0.0
     logger.info("Prediction Lab bridge daemon starting")
     while True:
         now = time.monotonic()
@@ -35,6 +38,20 @@ def main() -> int:
         except Exception:
             logger.exception("Next-hour shadow audit failed")
             next_hour_audit = now + 15.0
+        try:
+            if now >= next_sentinel_audit:
+                counters = update_sentinel_shadow()
+                next_sentinel_audit = now + SENTINEL_INTERVAL_S
+                logger.info(
+                    "EUROPE_SENTINEL_SHADOW adversarial=%d created=%d resolved=%d unresolved=%d",
+                    counters.get("adversarial", 0),
+                    counters.get("created", 0),
+                    counters.get("resolved", 0),
+                    counters.get("unresolved", 0),
+                )
+        except Exception:
+            logger.exception("Europe sentinel shadow audit failed")
+            next_sentinel_audit = now + 30.0
         try:
             if now >= next_context:
                 build_context_snapshot()

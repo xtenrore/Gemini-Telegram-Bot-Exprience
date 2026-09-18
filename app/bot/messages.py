@@ -13,20 +13,19 @@ from app.worker.geo import heading_to_cardinal, metres_to_feet, ms_to_knots
 # ── Welcome & Disclaimer ────────────────────────────────────────────────────
 
 WELCOME_MESSAGE = (
-    "✈️ <b>Welcome to Aircraft Alert Bot!</b>\n"
+    "✈️ <b>Welcome to Plane Alerts!</b>\n"
     "\n"
-    "I'll notify you when interesting aircraft fly near your location.\n"
+    "I'll notify you when matching aircraft are genuinely projected to pass near your spotting location.\n"
     "\n"
     "📋 Before we start, please read our disclaimer:\n"
     "\n"
     "⚠️ <b>IMPORTANT DISCLAIMER</b>\n"
     "• Aircraft data may be delayed or incomplete\n"
-    "• Coverage varies by region (best in US/Europe)\n"
-    "• Some military aircraft don't transmit ADS-B\n"
+    "• Coverage varies by region\n"
+    "• Some aircraft may not transmit usable ADS-B data\n"
     "• Data providers may have outages\n"
-    "• This is for informational purposes only\n"
+    "• This is for informational and spotting purposes only\n"
     "• Never rely solely on this service\n"
-    "• Always use common sense\n"
     "\n"
     "By continuing, you acknowledge these limitations."
 )
@@ -110,9 +109,8 @@ def setup_complete_message(
     radius_km: float,
 ) -> str:
     """Build the setup-complete summary message."""
-    lines = ["🎉 <b>Setup complete!</b>\n"]
+    lines = ["🎉 <b>Setup complete — Plane Alerts!</b>\n"]
 
-    # Monitoring targets
     lines.append("<b>Monitoring for:</b>")
     for cat in selected_categories:
         emoji = CATEGORY_EMOJIS.get(cat, "✈️")
@@ -125,14 +123,12 @@ def setup_complete_message(
         total_types += len(custom_aircraft)
 
     lines.append(f"\n<b>Total type codes tracked:</b> {total_types}")
-
-    # Location
     lines.append(f"\n📍 <b>Location:</b> <code>{lat:.4f}</code>, <code>{lon:.4f}</code>")
     lines.append(f"📏 <b>Radius:</b> {radius_km:.0f} km")
-
-    # Commands
     lines.append(
-        "\n<b>Commands:</b>\n"
+        "\n<b>Useful commands:</b>\n"
+        "/next60 — Next 60 Minutes forecast\n"
+        "/forecast — Alias for /next60\n"
         "/setup — Change all preferences\n"
         "/location — Update location\n"
         "/preferences — Update aircraft types\n"
@@ -160,9 +156,7 @@ def status_message(
             "Use /start to begin."
         )
 
-    lines = ["⚙️ <b>Current Configuration</b>\n"]
-
-    # Categories
+    lines = ["⚙️ <b>Plane Alerts Configuration</b>\n"]
     lines.append("<b>Monitored categories:</b>")
     if selected_categories:
         for cat in selected_categories:
@@ -178,7 +172,6 @@ def status_message(
     total_types = len(get_all_types_for_categories(selected_categories)) + len(custom_aircraft)
     lines.append(f"\n<b>Total type codes:</b> {total_types}")
 
-    # Location
     if lat is not None and lon is not None:
         lines.append(f"\n📍 <b>Location:</b> <code>{lat:.4f}</code>, <code>{lon:.4f}</code>")
     else:
@@ -186,7 +179,6 @@ def status_message(
 
     lines.append(f"📏 <b>Radius:</b> {radius_km:.0f} km")
     lines.append("\n✅ <b>Monitoring active</b>")
-
     return "\n".join(lines)
 
 
@@ -229,38 +221,35 @@ def aircraft_alert_message(
     if origin_country:
         lines.append(f"\n<b>Origin:</b> {origin_country}")
 
-    # Tracking link
-    lines.append(
-        f"\n<a href=\"https://globe.adsb.fi/?icao={icao24}\">🌍 Track on ADSB.fi</a>"
-    )
-
+    lines.append(f"\n<a href=\"https://globe.adsb.fi/?icao={icao24}\">🌍 Track on ADSB.fi</a>")
     return "\n".join(lines)
 
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 HELP_MESSAGE = (
-    "📖 <b>Aircraft Alert Bot — Help</b>\n"
+    "📖 <b>Plane Alerts v4.0 — Help</b>\n"
     "\n"
-    "<b>Setup &amp; Configuration</b>\n"
-    "/start — Initial welcome &amp; setup\n"
-    "/setup — Re-run full setup (overwrites config)\n"
-    "/location — Update your monitoring location\n"
-    "/preferences — Change aircraft type selection\n"
+    "<b>Forecast &amp; spotting</b>\n"
+    "/next60 — Planes expected in the next 60 minutes\n"
+    "/forecast — Alias for /next60\n"
+    "/spotting — Open Spotting Mode\n"
+    "/photo — Current shooting guidance\n"
+    "/conditions — Weather / sun / haze conditions\n"
+    "\n"
+    "<b>Setup &amp; configuration</b>\n"
+    "/start — Initial setup\n"
+    "/setup — Re-run setup\n"
+    "/location — Update monitoring location\n"
+    "/preferences — Change aircraft selection\n"
+    "/camera — Set camera body\n"
+    "/lens — Set lens\n"
     "\n"
     "<b>Information</b>\n"
     "/status — View your current configuration\n"
     "/help — Show this help message\n"
     "\n"
-    "<b>How it works</b>\n"
-    "I check for aircraft near your location every ~45 seconds. "
-    "When an aircraft matching your preferences is detected within "
-    "your monitoring radius, you'll receive an alert.\n"
-    "\n"
-    "Each aircraft will only alert once every 30 minutes to avoid spam.\n"
-    "\n"
-    "<b>Tip:</b> You can add custom ICAO type codes during setup or via "
-    "/preferences to track specific aircraft types not in the preset categories."
+    "Plane Alerts uses live trajectory/CPA when available. Longer 30–60 minute forecast entries are shadow/history-based and become more precise only as the aircraft gets closer."
 )
 
 CANCEL_MESSAGE = "❌ Operation cancelled. Use /help to see available commands."
