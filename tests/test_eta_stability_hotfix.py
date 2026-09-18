@@ -70,7 +70,7 @@ def test_small_miss_without_outward_motion_does_not_cancel_eta():
     assert should_cancel_active_alert(pred, 5.8, 8.0) is False
 
 
-def test_cancellation_needs_three_consecutive_credible_cycles():
+def test_cancellation_needs_three_credible_cycles():
     pred = SimpleNamespace(stale=False, already_passed=False, state="Moving away", enters_alert_radius=False, projected_closest_km=25.0, distance_trend_km_s=0.02, turning_away=False, confidence_score=0.7)
     candidate = should_cancel_active_alert(pred, 5.0, 15.0)
     assert candidate
@@ -80,5 +80,14 @@ def test_cancellation_needs_three_consecutive_credible_cycles():
     assert not confirmed and count == 2
     confirmed, count = advance_cancellation_confirmation(count, candidate)
     assert confirmed and count == 3
+
+
+def test_neutral_nonqualifying_cycle_does_not_erase_prior_cancellation_evidence():
+    confirmed, count = advance_cancellation_confirmation(1, False)
+    assert not confirmed and count == 1
+    confirmed, count = advance_cancellation_confirmation(count, True)
+    assert not confirmed and count == 2
     confirmed, count = advance_cancellation_confirmation(count, False)
-    assert not confirmed and count == 0
+    assert not confirmed and count == 2
+    confirmed, count = advance_cancellation_confirmation(count, True)
+    assert confirmed and count == 3
