@@ -70,4 +70,4 @@ jobs:
             --service "$SERVICE_ID" \
             --environment "$ENVIRONMENT_ID" \
             --ci \
-            --message "Plane? v3.6 ${DEPLOY_SHA}"
+            --message "Plane? v3.8 ${DEPLOY_SHA}"

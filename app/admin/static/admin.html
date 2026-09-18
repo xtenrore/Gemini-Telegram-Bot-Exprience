@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plane? v3.6 — Aircraft Alert Bot Admin</title>
+    <title>Plane? v3.8 — Aircraft Alert Bot Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -14,8 +14,8 @@
     <div class="login-gate" id="loginGate">
         <div class="card login-card">
             <div class="header-left" style="margin-bottom:14px">
-                <span class="header-icon">✈</span>
-                <div><h2>Plane? Admin</h2><span class="header-badge">v3.6</span></div>
+                <span class="header-icon" aria-hidden="true">✈︎</span>
+                <div><h2>Plane? Admin</h2><span class="header-badge">v3.8</span></div>
             </div>
             <p>Enter the ADMIN_PASSWORD configured for the production service. Delegated admins can open their personal admin link instead.</p>
             <div class="login-row">
@@ -28,9 +28,9 @@
 
     <header class="header">
         <div class="header-left">
-            <span class="header-icon">✈</span>
+            <span class="header-icon" aria-hidden="true">✈︎</span>
             <h1>Plane?</h1>
-            <span class="header-badge">Admin v3.6</span>
+            <span class="header-badge">Admin v3.8</span>
             <span class="session-pill" id="sessionPill">Authenticating…</span>
         </div>
         <div class="header-right">
@@ -43,19 +43,19 @@
 
     <main class="dashboard">
         <section class="cards-row admin-stat-row">
-            <div class="card stat-card"><div class="stat-icon">👥</div><div><div class="stat-value" id="totalUsers">-</div><div class="stat-label">Users</div></div></div>
-            <div class="card stat-card"><div class="stat-icon">⚡</div><div><div class="stat-value" id="priorityUsers">-</div><div class="stat-label">Priority</div></div></div>
-            <div class="card stat-card"><div class="stat-icon">🛡</div><div><div class="stat-value" id="delegatedAdmins">-</div><div class="stat-label">Delegated Admins</div></div></div>
-            <div class="card stat-card"><div class="stat-icon">🔕</div><div><div class="stat-value" id="pausedUsers">-</div><div class="stat-label">Notifications Paused</div></div></div>
-            <div class="card stat-card"><div class="stat-icon">⏱</div><div><div class="stat-value" id="customDelayUsers">-</div><div class="stat-label">Custom Delay</div></div></div>
-            <div class="card stat-card"><div class="stat-icon">🔄</div><div><div class="stat-value" id="lastCycle">-</div><div class="stat-label">Last Cycle</div></div></div>
+            <div class="card stat-card"><div class="stat-icon" aria-hidden="true">○○</div><div><div class="stat-value" id="totalUsers">-</div><div class="stat-label">Users</div></div></div>
+            <div class="card stat-card"><div class="stat-icon" aria-hidden="true">ϟ</div><div><div class="stat-value" id="priorityUsers">-</div><div class="stat-label">Priority</div></div></div>
+            <div class="card stat-card"><div class="stat-icon" aria-hidden="true">◇</div><div><div class="stat-value" id="delegatedAdmins">-</div><div class="stat-label">Delegated Admins</div></div></div>
+            <div class="card stat-card"><div class="stat-icon" aria-hidden="true">⊘</div><div><div class="stat-value" id="pausedUsers">-</div><div class="stat-label">Notifications Paused</div></div></div>
+            <div class="card stat-card"><div class="stat-icon" aria-hidden="true">◷</div><div><div class="stat-value" id="customDelayUsers">-</div><div class="stat-label">Custom Delay</div></div></div>
+            <div class="card stat-card"><div class="stat-icon" aria-hidden="true">↻</div><div><div class="stat-value" id="lastCycle">-</div><div class="stat-label">Last Cycle</div></div></div>
         </section>
 
         <section class="section">
             <h2 class="section-title">User Control Center <span class="inline-note">search by @username, name, or Telegram ID</span></h2>
             <div class="card">
                 <div class="admin-toolbar">
-                    <div class="search-wrap"><span class="search-icon">⌕</span><input class="input" id="userSearch" placeholder="Search @username, name, or ID"></div>
+                    <div class="search-wrap"><span class="search-icon" aria-hidden="true">⌕</span><input class="input" id="userSearch" placeholder="Search @username, name, or ID"></div>
                     <select class="select" id="pageSize"><option value="25">25 users</option><option value="50">50 users</option><option value="100">100 users</option></select>
                     <button class="btn" id="refreshUsers">Refresh users</button>
                 </div>
@@ -96,7 +96,7 @@
         </section>
     </main>
 
-    <footer class="footer"><p>Plane? v3.6 Admin — auto-refreshes operational data every 30 seconds</p></footer>
+    <footer class="footer"><p>Plane? v3.8 Admin — auto-refreshes operational data every 30 seconds</p></footer>
     <div class="toast" id="toast"></div>
     <script src="/admin/v36.js"></script>
 </body>
