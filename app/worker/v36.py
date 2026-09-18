@@ -1,11 +1,11 @@
-"""Plane? v3.6 priority-aware shared ADS-B scheduling used by the v3.7 runtime.
+"""Plane? v3.6 priority-aware shared ADS-B scheduling used by the v3.8 runtime.
 
-v3.7 intentionally keeps the proven v3.6 shared-provider architecture. The new
-live map consumes the same bounded history and does not introduce another
-provider polling loop. Priority users are still evaluated first and their shared
-region stays on the 5-second hot cadence. Delay Time remains a minimum per-user
-evaluation delay, so administrators can slow individual users without
-multiplying provider calls.
+v3.8 intentionally keeps the proven v3.6 shared-provider architecture and v3.7
+Telegram satellite map. The monochrome UI layer is presentation-only and does
+not introduce another provider polling loop. Priority users are still evaluated
+first and their shared region stays on the 5-second hot cadence. Delay Time
+remains a minimum per-user evaluation delay, so administrators can slow
+individual users without multiplying provider calls.
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ async def _record_v36_metrics(
         await system_status_col().update_one(
             {"_id": "monitor_worker"},
             {"$set": {
-                "plane_version": "3.7.0",
+                "plane_version": "3.8.0",
                 "shared_regions_last_cycle": region_count,
                 "provider_queries_last_cycle": provider_queries,
                 "shared_snapshot_cache_hits_last_cycle": cache_hits,
@@ -105,7 +105,7 @@ async def _record_v36_metrics(
             upsert=True,
         )
     except Exception:
-        logger.debug("Unable to persist v3.7 polling metrics", exc_info=True)
+        logger.debug("Unable to persist v3.8 polling metrics", exc_info=True)
 
 
 async def _monitor_cycle_v36() -> None:
@@ -191,7 +191,7 @@ async def _monitor_cycle_v36() -> None:
                 _last_user_processed_mono[int(user["user_id"])] = completed_at
         except Exception:
             logger.exception(
-                "v37_shared_region_failed region=%s users=%d priority=%s",
+                "v38_shared_region_failed region=%s users=%d priority=%s",
                 region.key,
                 len(due_users),
                 region_has_priority,
@@ -211,7 +211,7 @@ async def _monitor_cycle_v36() -> None:
         notifications_paused=paused_users,
     )
     logger.info(
-        "v37_cycle users=%d processed=%d priority=%d deferred=%d paused=%d regions=%d provider_queries=%d cache_hits=%d notifications=%d duration_ms=%.1f",
+        "v38_cycle users=%d processed=%d priority=%d deferred=%d paused=%d regions=%d provider_queries=%d cache_hits=%d notifications=%d duration_ms=%.1f",
         len(users),
         processed_users,
         priority_users,
@@ -229,4 +229,4 @@ async def run_monitor_cycle_v36() -> None:
     try:
         await _monitor_cycle_v36()
     except Exception:
-        logger.exception("Plane? v3.7 monitor cycle failed unexpectedly")
+        logger.exception("Plane? v3.8 monitor cycle failed unexpectedly")
