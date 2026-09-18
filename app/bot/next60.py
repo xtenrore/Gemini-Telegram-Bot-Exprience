@@ -1,24 +1,22 @@
-"""User-facing Plane Alerts v4.0 Next 60 Minutes forecast.
+"""User-facing Plane Alerts v4.1 Next 60 Minutes forecast.
 
-0–15/near-term candidates prefer the live deterministic CPA state. Longer-range
-entries come from Prediction Lab flight-number history. The command never
-creates/cancels alerts and never calls AI or a paid API.
+The command opens a Telegram Mini App when a public HTTPS base URL is available.
+The web surface is theme-native and scrollable; text remains the safe fallback.
+No image generation or paid API is used.
 """
 from __future__ import annotations
 
 import html
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from app.bot.forecast_card import render_forecast_card
+from app.config import settings
 from app.database import get_db, users_col
 
-logger = logging.getLogger(__name__)
 MAX_ROWS = 30
 
 
@@ -49,8 +47,6 @@ def _window_text(now: datetime, doc: dict[str, Any]) -> str:
     horizon_s = float(doc.get("prediction_horizon_s") or 0.0)
     source = str(doc.get("source") or "history")
 
-    # Long-range history should show a window, not fake exact precision. A live
-    # deterministic CPA may still show its current estimate at any horizon.
     if source != "live" and horizon_s > 1800 and start is not None and end is not None:
         return f"window in ~{start}–{end} min"
     if cpa is not None:
@@ -100,7 +96,7 @@ def render_next60(now: datetime, docs: list[dict[str, Any]]) -> str:
 
     lines = [
         "✈️ <b>Plane Alerts · Next 60 Minutes</b>",
-        "<i>v4.0 live + Prediction Lab forecast</i>",
+        "<i>v4.1 live + Prediction Lab forecast</i>",
     ]
     any_rows = False
     for label in ("0–15 min", "15–30 min", "30–60 min"):
@@ -140,6 +136,7 @@ async def _history_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
         {
             "_id": 0,
             "callsign": 1,
+            "aircraft_type": 1,
             "predicted_cpa_at": 1,
             "window_start": 1,
             "window_end": 1,
@@ -166,6 +163,7 @@ async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
             "_id": 0,
             "aircraft_icao24": 1,
             "route_callsign": 1,
+            "aircraft_type": 1,
             "projected_closest_km": 1,
             "time_to_cpa_s": 1,
             "confidence": 1,
@@ -184,6 +182,7 @@ async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
         docs.append({
             "callsign": callsign,
             "aircraft_icao24": state.get("aircraft_icao24"),
+            "aircraft_type": state.get("aircraft_type"),
             "predicted_cpa_at": now + timedelta(seconds=eta_s),
             "prediction_horizon_s": eta_s,
             "predicted_closest_km": state.get("projected_closest_km"),
@@ -194,41 +193,11 @@ async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
     return docs
 
 
-async def _send_forecast_photo(message: Any, now: datetime, docs: list[dict[str, Any]]) -> None:
-    """Send the deterministic PNG first; text still follows as the accessible detail view."""
-    try:
-        card = render_forecast_card(now, docs)
-        await message.reply_photo(
-            photo=card,
-            caption=(
-                "Plane Alerts · Next 60 Minutes\n"
-                "Live CPA + Prediction Lab shadow forecast"
-            ),
-        )
-    except Exception:
-        # Image rendering must never make the command fail. The text forecast is
-        # still the authoritative fallback and contains the complete details.
-        logger.exception("next60_forecast_card_failed")
+async def build_next60_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
+    """Build one merged forecast, preferring live deterministic geometry."""
+    history = await _history_docs(user_id, now)
+    live = await _live_docs(user_id, now)
 
-
-async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
-    user = update.effective_user
-    message = update.message
-    if user is None or message is None:
-        return
-
-    user_doc = await users_col().find_one({"user_id": user.id}, {"setup_complete": 1})
-    if not user_doc or not user_doc.get("setup_complete"):
-        await message.reply_text("Finish /start setup first so Plane Alerts knows which location to forecast for.")
-        return
-
-    now = datetime.now(timezone.utc)
-    history = await _history_docs(user.id, now)
-    live = await _live_docs(user.id, now)
-
-    # History fills the horizon; live deterministic geometry overrides it for
-    # the same callsign/aircraft once the flight is in production tracking.
     merged: dict[str, dict[str, Any]] = {}
     anonymous = 0
     for doc in history:
@@ -246,11 +215,44 @@ async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     docs = list(merged.values())
     docs.sort(key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
-    docs = docs[:MAX_ROWS]
+    return docs[:MAX_ROWS]
 
-    # Visual summary first, then the full text data. The PNG is generated
-    # locally from these exact docs; there is no AI image generation at runtime.
-    await _send_forecast_photo(message, now, docs)
+
+def _next60_web_app_url() -> str | None:
+    base = settings.webhook_url.strip().rstrip("/")
+    if not base.lower().startswith("https://"):
+        return None
+    return f"{base}/next60-ui"
+
+
+async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+
+    user_doc = await users_col().find_one({"user_id": user.id}, {"setup_complete": 1})
+    if not user_doc or not user_doc.get("setup_complete"):
+        await message.reply_text("Finish /start setup first so Plane Alerts knows which location to forecast for.")
+        return
+
+    web_app_url = _next60_web_app_url()
+    if web_app_url:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "Open Next 60",
+            web_app=WebAppInfo(url=web_app_url),
+        )]])
+        await message.reply_text(
+            "✈️ <b>Next 60 Minutes</b>\nLive trajectory + Prediction Lab forecast.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
+        return
+
+    now = datetime.now(timezone.utc)
+    docs = await build_next60_docs(user.id, now)
     await message.reply_text(
         render_next60(now, docs),
         parse_mode=ParseMode.HTML,
