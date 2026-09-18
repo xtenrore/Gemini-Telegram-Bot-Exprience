@@ -7,10 +7,12 @@ import os
 import platform
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from telegram import BotCommand, Update
 from telegram.ext import Application
 
@@ -21,7 +23,8 @@ from app.agy_console import register_agy_console_handlers
 from app.aircraft.api_keys import opensky_key_manager
 from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
-from app.bot.next60 import register_next60_handlers
+from app.bot.next60 import build_next60_docs, register_next60_handlers
+from app.bot.next60_web import NEXT60_HTML, serialize_next60, validate_telegram_init_data
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
 from app.logging_security import configure_secure_logging
@@ -202,6 +205,44 @@ app.add_middleware(
 app.add_middleware(DelegatedAdminMiddleware)
 app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(admin_v36_router, prefix="/admin", tags=["admin-v3.6"])
+
+
+@app.get("/next60-ui", response_class=HTMLResponse)
+async def next60_ui() -> HTMLResponse:
+    return HTMLResponse(content=NEXT60_HTML, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/next60")
+async def next60_api(request: Request) -> Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"detail": "invalid request"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    init_data = str((payload or {}).get("init_data") or "") if isinstance(payload, dict) else ""
+    user_id = validate_telegram_init_data(init_data, settings.telegram_bot_token)
+    if user_id is None:
+        return JSONResponse(
+            {"detail": "unauthorized"},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    user_doc = await users_col().find_one({"user_id": user_id}, {"setup_complete": 1})
+    if not user_doc or not user_doc.get("setup_complete"):
+        return JSONResponse(
+            {"detail": "setup required"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    now = datetime.now(timezone.utc)
+    docs = await build_next60_docs(user_id, now)
+    return JSONResponse(serialize_next60(now, docs), headers={"Cache-Control": "no-store"})
 
 
 @app.api_route("/", methods=["GET", "HEAD"], response_class=Response)
