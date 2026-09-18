@@ -19,9 +19,9 @@ if [[ -z "${AGY_KEYRING_PASSWORD:-}" ]]; then
   exit 78
 fi
 
-# Antigravity account sessions are stored through Linux Secret Service.  Start
+# Antigravity account sessions are stored through Linux Secret Service. Start
 # one D-Bus session for the lifetime of this container, then unlock/create the
-# login keyring using a Railway secret.  The encrypted keyring files themselves
+# login keyring using a Railway secret. The encrypted keyring files themselves
 # live under the persistent volume via XDG_DATA_HOME.
 eval "$(dbus-launch --sh-syntax)"
 KEYRING_ENV="$(printf '%s' "$AGY_KEYRING_PASSWORD" | gnome-keyring-daemon --unlock --components=secrets 2>/tmp/agy-keyring-error.log || true)"
@@ -46,7 +46,10 @@ unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL
 export PATH="/usr/local/bin:$PATH"
 export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
-# Explicitly force AI Credit Overages to Never before AGY is allowed to start.
+# Seed first-launch choices directly on the persistent volume so a phone-only
+# user does not have to navigate AGY's theme/rendering/workspace-trust wizard.
+# The workspace is this dedicated Plane Alerts worker image at /app.
+# Paid AI-credit overages remain forcibly disabled.
 python - <<'PY'
 import json, os
 from pathlib import Path
@@ -59,9 +62,17 @@ except Exception:
     data = {}
 data.pop('modelProvider', None)
 data['useG1Credits'] = False
+data['colorScheme'] = data.get('colorScheme') or 'terminal'
+data['altScreenMode'] = 'never'
+data['agentMode'] = 'accept-edits'
+data['enableTelemetry'] = False
+trusted = list(data.get('trustedWorkspaces') or [])
+if '/app' not in trusted:
+    trusted.append('/app')
+data['trustedWorkspaces'] = trusted
 tmp = path.with_suffix('.tmp')
 tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
 tmp.replace(path)
 PY
 
-exec uvicorn app.agy_worker:app --host 0.0.0.0 --port "${PORT:-8090}" --workers 1
+exec uvicorn app.agy_worker_ext:app --host 0.0.0.0 --port "${PORT:-8090}" --workers 1
