@@ -59,6 +59,10 @@ done
 export TERM="${TERM:-xterm-256color}"
 export COLUMNS="${COLUMNS:-120}"
 export LINES="${LINES:-40}"
+# pty.openpty() starts at 0x0 in a headless container. Set a real outer PTY
+# size before `script` creates AGY's controlling TTY; otherwise the TUI starts
+# but has no drawable rows/columns and produces no visible login prompt.
+stty rows "$LINES" cols "$COLUMNS" <&0 2>/dev/null || true
 cmd=("$REAL" --model "$MODEL" "$@")
 printf -v quoted '%q ' "${cmd[@]}"
 exec script -qefc "$quoted" /dev/null
