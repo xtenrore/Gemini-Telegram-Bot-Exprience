@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnome-keyring \
     libsecret-tools \
     procps \
+    util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -32,8 +33,10 @@ RUN mkdir -p /opt/antigravity \
     && mv /opt/antigravity/agy /usr/local/bin/agy-real
 
 # Wrapper pins every normal AGY session to Gemini 3.1 Pro High and strips
-# Railway secrets before the agent process starts. Metadata-only commands still
-# pass straight through to the real binary.
+# Railway secrets before the agent process starts. Headless `-p` runs stay on
+# ordinary pipes so stream-json remains machine-readable. Interactive runs are
+# placed inside util-linux `script`, which creates a genuine controlling TTY;
+# AGY needs that in a headless container to render the SSH OAuth URL/prompt.
 RUN cat > /usr/local/bin/agy <<'SH' && chmod +x /usr/local/bin/agy
 #!/usr/bin/env bash
 set -e
@@ -45,10 +48,23 @@ case "${1:-}" in
     exec "$REAL" "$@"
     ;;
 esac
-exec "$REAL" --model "${AGY_MODEL:-gemini-3.1-pro-high}" "$@"
+
+MODEL="${AGY_MODEL:-gemini-3.1-pro-high}"
+for arg in "$@"; do
+  if [[ "$arg" == "-p" || "$arg" == "--prompt" ]]; then
+    exec "$REAL" --model "$MODEL" "$@"
+  fi
+done
+
+export TERM="${TERM:-xterm-256color}"
+export COLUMNS="${COLUMNS:-120}"
+export LINES="${LINES:-40}"
+cmd=("$REAL" --model "$MODEL" "$@")
+printf -v quoted '%q ' "${cmd[@]}"
+exec script -qefc "$quoted" /dev/null
 SH
 
-RUN agy --version
+RUN command -v script && agy --version
 
 COPY . .
 RUN chmod +x /app/scripts/agy-worker-entrypoint.sh /app/scripts/agy_record_finding.py
