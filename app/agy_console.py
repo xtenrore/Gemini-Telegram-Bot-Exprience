@@ -1,9 +1,4 @@
-"""Telegram bridge for the private Plane Alerts Antigravity worker.
-
-Only the sole registered Telegram user (or ADMIN_TELEGRAM_ID when configured)
-may open the bridge. Text entered while the bridge is active is forwarded to
-AGY stdin; it is never executed as a host shell command.
-"""
+"""Telegram bridge for the private Plane Alerts Antigravity worker."""
 from __future__ import annotations
 
 import asyncio
@@ -30,21 +25,30 @@ from app.config import settings
 from app.database import users_col
 
 logger = logging.getLogger(__name__)
-
 POLL_SECONDS = 1.0
 MAX_TELEGRAM_CHUNK = 3500
 
-# Telegram cannot send a blank message, so a terminal UI waiting for a bare
-# Enter key would otherwise be impossible to operate from the chat. Keep this
-# mapping deliberately tiny: these are terminal keystrokes, never shell text.
 TERMINAL_CONTROLS: dict[str, str] = {
     "enter": "\r",
+    "up": "\x1b[A",
+    "down": "\x1b[B",
+    "left": "\x1b[D",
+    "right": "\x1b[C",
+    "space": " ",
+    "esc": "\x1b",
+    "ctrlc": "\x03",
+}
+CONTROL_LABELS = {
+    "enter": "↵ Enter",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+    "space": "␠ Space",
+    "esc": "Esc",
+    "ctrlc": "Ctrl+C",
 }
 
-# Antigravity renders OAuth URLs using terminal hyperlink escape sequences.
-# The worker strips control bytes for Telegram, which can leave terminal markup
-# around the URL. Extract the HTTPS target and present it separately as a real
-# Telegram URL button instead of making the user copy terminal-rendered text.
 _URL_RE = re.compile(r"https://[^\s<>\"']+")
 _GOOGLE_HOST_SUFFIXES = (".google.com", ".googleusercontent.com")
 
@@ -75,14 +79,29 @@ def _controls_keyboard(oauth_url: str | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if oauth_url:
         rows.append([InlineKeyboardButton("🔐 Open Google sign-in", url=oauth_url)])
-    rows.append([InlineKeyboardButton("↵ Enter", callback_data="agy:key:enter")])
+    rows.extend(
+        [
+            [
+                InlineKeyboardButton("↑", callback_data="agy:key:up"),
+                InlineKeyboardButton("↵ Enter", callback_data="agy:key:enter"),
+                InlineKeyboardButton("↓", callback_data="agy:key:down"),
+            ],
+            [
+                InlineKeyboardButton("←", callback_data="agy:key:left"),
+                InlineKeyboardButton("␠ Space", callback_data="agy:key:space"),
+                InlineKeyboardButton("→", callback_data="agy:key:right"),
+            ],
+            [
+                InlineKeyboardButton("Esc", callback_data="agy:key:esc"),
+                InlineKeyboardButton("Ctrl+C", callback_data="agy:key:ctrlc"),
+            ],
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
 def _sanitize_google_url(candidate: str) -> str | None:
     value = candidate.strip()
-    # OSC-8 hyperlinks may leave a closing `8;;` marker once terminal control
-    # bytes have been removed. It is never part of Google's OAuth URL.
     for marker in ("8;;", "]8;;", "\x1b", "\x07"):
         if marker in value:
             value = value.split(marker, 1)[0]
@@ -101,8 +120,6 @@ def _sanitize_google_url(candidate: str) -> str | None:
 
 def _extract_google_urls(lines: list[str]) -> list[str]:
     found: list[str] = []
-    # First inspect individual lines; then inspect the joined text in case a TUI
-    # split visual output across line events.
     candidates = list(lines)
     if len(lines) > 1:
         candidates.append("".join(lines))
@@ -112,6 +129,17 @@ def _extract_google_urls(lines: list[str]) -> list[str]:
             if cleaned and cleaned not in found:
                 found.append(cleaned)
     return found
+
+
+def _normalize_authorization_code(raw: str) -> str:
+    compact = re.sub(r"\s+", "", raw or "")
+    if not compact:
+        raise ValueError("Authorization code is empty")
+    if compact.startswith("4/") and len(compact) % 2 == 0:
+        half = len(compact) // 2
+        if compact[:half] == compact[half:]:
+            compact = compact[:half]
+    return compact
 
 
 async def _authorized(user_id: int) -> bool:
@@ -161,12 +189,7 @@ def _chunks(lines: list[str]) -> list[str]:
     return out
 
 
-async def _send_console_lines(
-    session: _Session,
-    chat_id: int,
-    bot: Any,
-    lines: list[str],
-) -> None:
+async def _send_console_lines(session: _Session, chat_id: int, bot: Any, lines: list[str]) -> None:
     urls = _extract_google_urls(lines)
     for oauth_url in urls:
         if oauth_url in session.seen_urls:
@@ -176,15 +199,11 @@ async def _send_console_lines(
             chat_id=chat_id,
             text=(
                 "🔐 Google sign-in\n\n"
-                "Tap the button below to open the clean Google OAuth page. "
-                "After Google gives you an authorization code, send it as:\n\n"
+                "Tap the button below. After Google gives you an authorization code, send:\n\n"
                 "/agy code YOUR_CODE"
             ),
             reply_markup=_controls_keyboard(oauth_url),
         )
-
-    # Do not repeat the terminal-rendered/corrupted version of a Google URL once
-    # we have extracted it into a proper Telegram button.
     display_lines = [line for line in lines if not _extract_google_urls([line])]
     for chunk in _chunks(display_lines):
         await bot.send_message(chat_id=chat_id, text=chunk, reply_markup=_controls_keyboard())
@@ -241,10 +260,7 @@ async def _send_terminal_control(user_id: int, key: str) -> None:
 async def _send_code(user_id: int, code: str) -> None:
     if user_id not in _sessions:
         raise RuntimeError("AGY console is not connected")
-    code = code.strip()
-    if not code:
-        raise ValueError("Authorization code is empty")
-    # The worker appends the terminal newline; only the code itself is sent.
+    code = _normalize_authorization_code(code)
     await _request("POST", "/console/input", json={"text": code})
 
 
@@ -269,7 +285,10 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         try:
             await _send_code(user.id, code)
-            await message.reply_text("Authorization code sent to Antigravity.", reply_markup=_controls_keyboard())
+            await message.reply_text(
+                "Authorization code sanitized and sent to Antigravity. If the TUI still waits, tap ↵ Enter once.",
+                reply_markup=_controls_keyboard(),
+            )
         except RuntimeError:
             await message.reply_text("AGY console is not connected. Send /agy first.")
         except Exception as exc:
@@ -280,12 +299,15 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action in TERMINAL_CONTROLS:
         try:
             await _send_terminal_control(user.id, action)
-            await message.reply_text("↵ Enter sent to Antigravity.", reply_markup=_controls_keyboard())
+            await message.reply_text(
+                f"{CONTROL_LABELS.get(action, action)} sent to Antigravity.",
+                reply_markup=_controls_keyboard(),
+            )
         except RuntimeError:
             await message.reply_text("AGY console is not connected. Send /agy first.")
         except Exception as exc:
             logger.exception("Could not send AGY terminal control")
-            await message.reply_text(f"Could not send Enter ({type(exc).__name__}).")
+            await message.reply_text(f"Could not send {action} ({type(exc).__name__}).")
         return
 
     if action in {"stop", "exit", "close"}:
@@ -299,16 +321,12 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "status":
         try:
             worker = await _request("GET", "/supervisor/status")
-            status = worker.get("status", "unknown")
-            enabled = worker.get("enabled", False)
-            running = worker.get("goal_running", False)
-            next_run = worker.get("next_run_iso") or "not scheduled"
             await message.reply_text(
                 "AGY Prediction Lab\n"
-                f"Supervisor: {status}\n"
-                f"Goal loop enabled: {enabled}\n"
-                f"Goal running: {running}\n"
-                f"Next run: {next_run}\n"
+                f"Supervisor: {worker.get('status', 'unknown')}\n"
+                f"Goal loop enabled: {worker.get('enabled', False)}\n"
+                f"Goal running: {worker.get('goal_running', False)}\n"
+                f"Next run: {worker.get('next_run_iso') or 'not scheduled'}\n"
                 "Paid credit overages: OFF\n"
                 "Model: Gemini 3.1 Pro High"
             )
@@ -317,12 +335,8 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await message.reply_text(f"Could not read AGY status ({type(exc).__name__}).")
         return
 
-    # Do not expose autonomous goal activation before the user finishes account
-    # authentication and explicitly tells ChatGPT to enable it.
     if action == "goal":
-        await message.reply_text(
-            "The autonomous goal loop is intentionally locked until your AGY Google login is confirmed."
-        )
+        await message.reply_text("The autonomous goal loop stays locked until AGY Google login is confirmed.")
         return
 
     active = _sessions.get(user.id)
@@ -336,7 +350,7 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await message.reply_text(
                     "AGY console is already connected. Plane Alerts notifications are muted while you are here."
                     + suffix
-                    + " Use /agy stop to disconnect.",
+                    + " Use the controls below or /agy stop to disconnect.",
                     reply_markup=_controls_keyboard(),
                 )
                 return
@@ -356,8 +370,8 @@ async def cmd_agy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     set_agy_console_active(user.id, True)
     await message.reply_text(
         "AGY console connected. Plane Alerts notifications are muted until /agy stop. "
-        "Use ↵ Enter for terminal Enter. I’ll send the Google OAuth URL separately as a clean button. "
-        "When Google gives you the code, send /agy code YOUR_CODE.",
+        "Use ↑/↓/←/→, Space, Enter, Esc, or Ctrl+C with the buttons below. "
+        "For Google auth codes use /agy code YOUR_CODE.",
         reply_markup=_controls_keyboard(),
     )
 
@@ -384,7 +398,7 @@ async def _agy_control_callback(update: Update, context: ContextTypes.DEFAULT_TY
     key = data.split(":", 2)[2]
     try:
         await _send_terminal_control(user.id, key)
-        await query.answer("Enter sent")
+        await query.answer(f"{CONTROL_LABELS.get(key, key)} sent")
     except RuntimeError:
         await query.answer("AGY console is not connected", show_alert=True)
     except Exception:
@@ -393,7 +407,6 @@ async def _agy_control_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_agy_text_if_active(update: Update) -> bool:
-    """Forward free text to AGY when the owner has an active console."""
     user = update.effective_user
     message = update.message
     if user is None or message is None or message.text is None:
@@ -414,13 +427,10 @@ async def handle_agy_text_if_active(update: Update) -> bool:
 async def _agy_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if await handle_agy_text_if_active(update):
-        # Prevent the normal Plane Alerts free-text handler from interpreting an
-        # OAuth code or AGY prompt as an ICAO/radius message.
         raise ApplicationHandlerStop
 
 
 def register_agy_console_handlers(app: Application) -> None:
-    """Register the private console ahead of normal command/text handlers."""
     app.add_handler(CommandHandler("agy", cmd_agy), group=-20)
     app.add_handler(CallbackQueryHandler(_agy_control_callback, pattern=r"^agy:key:"), group=-20)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _agy_text_handler), group=-20)
