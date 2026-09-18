@@ -1,8 +1,8 @@
-"""User-facing Plane Alerts v4.0 next-hour spotting forecast.
+"""User-facing Plane Alerts v4.0 Next 60 Minutes forecast.
 
-The command only reads deterministic Prediction Lab shadow expectations already
-stored by the parent-side next-hour auditor. It never creates/cancels alerts and
-never calls AI or a paid API.
+0–15/near-term candidates prefer the live deterministic CPA state. Longer-range
+entries come from Prediction Lab flight-number history. The command never
+creates/cancels alerts and never calls AI or a paid API.
 """
 from __future__ import annotations
 
@@ -44,10 +44,11 @@ def _window_text(now: datetime, doc: dict[str, Any]) -> str:
     end = _minutes_from(now, _aware(doc.get("window_end")))
     cpa = _minutes_from(now, _aware(doc.get("predicted_cpa_at")))
     horizon_s = float(doc.get("prediction_horizon_s") or 0.0)
+    source = str(doc.get("source") or "history")
 
-    # 30–60 minute estimates deliberately show a broad window. Do not imply an
-    # exact ETA that the shadow system has not earned yet.
-    if horizon_s > 1800 and start is not None and end is not None:
+    # Long-range history should show a window, not fake exact precision. A live
+    # deterministic CPA may still show its current estimate at any horizon.
+    if source != "live" and horizon_s > 1800 and start is not None and end is not None:
         return f"window in ~{start}–{end} min"
     if cpa is not None:
         return f"closest pass in ~{cpa} min"
@@ -65,10 +66,17 @@ def _row(now: datetime, doc: dict[str, Any]) -> str:
         distance = f"~{float(closest):.1f} km"
     except (TypeError, ValueError):
         pass
-    history_days = int(doc.get("historical_days") or 0)
+
+    if doc.get("source") == "live":
+        stage = html.escape(str(doc.get("stage") or "live"))
+        evidence = f"live trajectory · {stage}"
+    else:
+        history_days = int(doc.get("historical_days") or 0)
+        evidence = f"history shadow · {history_days} day{'s' if history_days != 1 else ''}"
+
     return (
         f"• <b>{callsign}</b> · {_window_text(now, doc)} · {distance}\n"
-        f"  confidence {confidence} · {history_days} historical day{'s' if history_days != 1 else ''}"
+        f"  confidence {confidence} · {evidence}"
     )
 
 
@@ -89,7 +97,7 @@ def render_next60(now: datetime, docs: list[dict[str, Any]]) -> str:
 
     lines = [
         "✈️ <b>Plane Alerts · Next 60 Minutes</b>",
-        "<i>v4.0 Prediction Lab forecast</i>",
+        "<i>v4.0 live + Prediction Lab forecast</i>",
     ]
     any_rows = False
     for label in ("0–15 min", "15–30 min", "30–60 min"):
@@ -104,35 +112,25 @@ def render_next60(now: datetime, docs: list[dict[str, Any]]) -> str:
 
     if not any_rows:
         lines.append(
-            "\nNo historical next-hour candidates are available right now. "
-            "The v4.0 shadow system needs recent observations of the same flight number before it can forecast it."
+            "\nNo next-hour candidates are available right now. New flight numbers need observed route history before the longer-range shadow system can forecast them."
         )
 
     lines.append(
-        "\n<i>30–60 min is shadow/history-based and is not a guaranteed alert. "
-        "Live CPA/trajectory becomes authoritative as the aircraft gets closer. Missing ADS-B coverage is not scored as a hit or miss.</i>"
+        "\n<i>Live trajectory/CPA is preferred when available. 30–60 min history entries are shadow estimates, not guaranteed alerts. Missing ADS-B coverage is not scored as a hit or miss.</i>"
     )
     return "\n".join(lines)
 
 
-async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
-    user = update.effective_user
-    message = update.message
-    if user is None or message is None:
-        return
+def _identity(doc: dict[str, Any]) -> str:
+    return str(doc.get("callsign") or doc.get("aircraft_icao24") or "").strip().upper()
 
-    user_doc = await users_col().find_one({"user_id": user.id}, {"setup_complete": 1})
-    if not user_doc or not user_doc.get("setup_complete"):
-        await message.reply_text("Finish /start setup first so Plane Alerts knows which location to forecast for.")
-        return
 
-    now = datetime.now(timezone.utc)
+async def _history_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
     horizon = now + timedelta(minutes=60)
     cursor = get_db()["prediction_lab_audit"].find(
         {
             "kind": "next_hour_expectation",
-            "user_id": user.id,
+            "user_id": user_id,
             "status": "awaiting_outcome",
             "predicted_cpa_at": {"$gte": now, "$lte": horizon},
         },
@@ -149,8 +147,87 @@ async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         },
     ).sort("predicted_cpa_at", 1).limit(MAX_ROWS)
     docs = [doc async for doc in cursor]
+    for doc in docs:
+        doc["source"] = "history"
+    return docs
+
+
+async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
+    cursor = get_db()["approach_states"].find(
+        {
+            "user_id": user_id,
+            "active": True,
+            "time_to_cpa_s": {"$gte": 0, "$lte": 3600},
+        },
+        {
+            "_id": 0,
+            "aircraft_icao24": 1,
+            "route_callsign": 1,
+            "projected_closest_km": 1,
+            "time_to_cpa_s": 1,
+            "confidence": 1,
+            "stage": 1,
+        },
+    ).limit(MAX_ROWS)
+    docs: list[dict[str, Any]] = []
+    async for state in cursor:
+        try:
+            eta_s = float(state.get("time_to_cpa_s"))
+        except (TypeError, ValueError):
+            continue
+        if eta_s < 0 or eta_s > 3600:
+            continue
+        callsign = str(state.get("route_callsign") or state.get("aircraft_icao24") or "Unknown").upper()
+        docs.append({
+            "callsign": callsign,
+            "aircraft_icao24": state.get("aircraft_icao24"),
+            "predicted_cpa_at": now + timedelta(seconds=eta_s),
+            "prediction_horizon_s": eta_s,
+            "predicted_closest_km": state.get("projected_closest_km"),
+            "confidence": state.get("confidence") or "Low",
+            "stage": state.get("stage") or "live",
+            "source": "live",
+        })
+    return docs
+
+
+async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+
+    user_doc = await users_col().find_one({"user_id": user.id}, {"setup_complete": 1})
+    if not user_doc or not user_doc.get("setup_complete"):
+        await message.reply_text("Finish /start setup first so Plane Alerts knows which location to forecast for.")
+        return
+
+    now = datetime.now(timezone.utc)
+    history = await _history_docs(user.id, now)
+    live = await _live_docs(user.id, now)
+
+    # History fills the horizon; live deterministic geometry overrides it for
+    # the same callsign/aircraft once the flight is in production tracking.
+    merged: dict[str, dict[str, Any]] = {}
+    anonymous = 0
+    for doc in history:
+        key = _identity(doc)
+        if not key:
+            anonymous += 1
+            key = f"history-{anonymous}"
+        merged[key] = doc
+    for doc in live:
+        key = _identity(doc)
+        if not key:
+            anonymous += 1
+            key = f"live-{anonymous}"
+        merged[key] = doc
+
+    docs = list(merged.values())
+    docs.sort(key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
     await message.reply_text(
-        render_next60(now, docs),
+        render_next60(now, docs[:MAX_ROWS]),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
