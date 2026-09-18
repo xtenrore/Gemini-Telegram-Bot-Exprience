@@ -1,23 +1,30 @@
-"""User-facing Plane Alerts v4.1 Next 60 Minutes forecast.
+"""Native Telegram Next 60 forecast for Plane Alerts v4.2.
 
-The command opens a Telegram Mini App when a public HTTPS base URL is available.
-The web surface is theme-native and scrollable; text remains the safe fallback.
-No image generation or paid API is used.
+The command intentionally stays inside the chat. It renders compact aircraft rows
+and per-aircraft inline buttons for ADS-B tracking and deterministic details.
+No Mini App, image generation, paid API, or AI decision is used.
 """
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
-from app.config import settings
 from app.database import get_db, users_col
 
 MAX_ROWS = 30
+MORE_PREFIX = "n60_more:"
 
 
 def _aware(value: Any) -> datetime | None:
@@ -40,46 +47,146 @@ def _bucket(horizon_minutes: float) -> str:
     return "30–60 min"
 
 
-def _window_text(now: datetime, doc: dict[str, Any]) -> str:
+def _identity(doc: dict[str, Any]) -> str:
+    return str(doc.get("callsign") or doc.get("aircraft_icao24") or "").strip().upper()
+
+
+def _callback_token(doc: dict[str, Any]) -> str:
+    value = _identity(doc)
+    return re.sub(r"[^A-Z0-9]", "", value)[:24]
+
+
+def _icao24(doc: dict[str, Any]) -> str:
+    raw = str(doc.get("aircraft_icao24") or "").strip().lower()
+    return raw if re.fullmatch(r"[0-9a-f]{6}", raw) else ""
+
+
+def _adsb_url(doc: dict[str, Any]) -> str | None:
+    icao = _icao24(doc)
+    return f"https://adsb.lol/?icao={icao}" if icao else None
+
+
+def _aircraft_label(doc: dict[str, Any]) -> str:
+    return str(doc.get("aircraft_type") or "").strip().upper()
+
+
+def _distance_text(doc: dict[str, Any]) -> str:
+    try:
+        return f"{float(doc.get('predicted_closest_km')):.1f} km"
+    except (TypeError, ValueError):
+        return "? km"
+
+
+def _eta_text(now: datetime, doc: dict[str, Any]) -> str:
+    cpa = _minutes_from(now, _aware(doc.get("predicted_cpa_at")))
+    if cpa is not None:
+        return f"{cpa}m"
     start = _minutes_from(now, _aware(doc.get("window_start")))
     end = _minutes_from(now, _aware(doc.get("window_end")))
-    cpa = _minutes_from(now, _aware(doc.get("predicted_cpa_at")))
-    horizon_s = float(doc.get("prediction_horizon_s") or 0.0)
-    source = str(doc.get("source") or "history")
-
-    if source != "live" and horizon_s > 1800 and start is not None and end is not None:
-        return f"window in ~{start}–{end} min"
-    if cpa is not None:
-        return f"closest pass in ~{cpa} min"
     if start is not None and end is not None:
-        return f"window in ~{start}–{end} min"
-    return "timing window unavailable"
+        return f"{start}–{end}m"
+    return "?m"
 
 
-def _row(now: datetime, doc: dict[str, Any]) -> str:
-    callsign = html.escape(str(doc.get("callsign") or "Unknown"))
+def _compact_row(now: datetime, doc: dict[str, Any]) -> str:
+    type_label = html.escape(_aircraft_label(doc))
+    callsign = html.escape(_identity(doc) or "Unknown")
+    if type_label:
+        return f"✈️ <b>{type_label}</b> · {callsign} · {_eta_text(now, doc)} · {_distance_text(doc)}"
+    return f"✈️ <b>{callsign}</b> · {_eta_text(now, doc)} · {_distance_text(doc)}"
+
+
+def _detail_text(now: datetime, doc: dict[str, Any]) -> str:
+    callsign = html.escape(_identity(doc) or "Unknown")
+    aircraft_type = html.escape(str(doc.get("aircraft_type") or "Unknown").upper())
     confidence = html.escape(str(doc.get("confidence") or "Low"))
-    closest = doc.get("predicted_closest_km")
-    distance = "? km"
-    try:
-        distance = f"~{float(closest):.1f} km"
-    except (TypeError, ValueError):
-        pass
-
-    if doc.get("source") == "live":
-        stage = html.escape(str(doc.get("stage") or "live"))
-        evidence = f"live trajectory · {stage}"
+    icao = html.escape(_icao24(doc).upper() or "Not available")
+    source = str(doc.get("source") or "history")
+    if source == "live":
+        source_text = "Live deterministic trajectory"
+        stage_text = html.escape(str(doc.get("stage") or "live").replace("_", " "))
     else:
         history_days = int(doc.get("historical_days") or 0)
-        evidence = f"history shadow · {history_days} day{'s' if history_days != 1 else ''}"
+        source_text = f"Prediction Lab history shadow · {history_days} day{'s' if history_days != 1 else ''}"
+        stage_text = "forecast only"
 
     return (
-        f"• <b>{callsign}</b> · {_window_text(now, doc)} · {distance}\n"
-        f"  confidence {confidence} · {evidence}"
+        f"✈️ <b>{callsign}</b>\n"
+        f"Aircraft: <b>{aircraft_type}</b>\n"
+        f"ETA to closest approach: <b>{_eta_text(now, doc)}</b>\n"
+        f"Projected closest: <b>{_distance_text(doc)}</b>\n"
+        f"Confidence: <b>{confidence}</b>\n"
+        f"State: {stage_text}\n"
+        f"Source: {source_text}\n"
+        f"ICAO24: <code>{icao}</code>"
     )
 
 
+def render_next60_native(
+    now: datetime,
+    docs: list[dict[str, Any]],
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "0–15 min": [],
+        "15–30 min": [],
+        "30–60 min": [],
+    }
+    visible: list[dict[str, Any]] = []
+    for doc in docs:
+        cpa = _aware(doc.get("predicted_cpa_at"))
+        if cpa is None:
+            continue
+        horizon = (cpa - now).total_seconds() / 60.0
+        if horizon < 0 or horizon > 60:
+            continue
+        buckets[_bucket(horizon)].append(doc)
+        visible.append(doc)
+
+    lines = [
+        "✈️ <b>Next 60 Minutes</b>",
+        "<i>Type · flight · ETA · closest pass</i>",
+    ]
+
+    if not visible:
+        lines.append(
+            "\nNo next-hour candidates right now. Longer-range entries appear only when Plane? has enough route history."
+        )
+        return "\n".join(lines), None
+
+    for label in ("0–15 min", "15–30 min", "30–60 min"):
+        rows = buckets[label]
+        if not rows:
+            continue
+        rows.sort(key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
+        lines.append(f"\n<b>{label}</b>")
+        lines.extend(_compact_row(now, row) for row in rows)
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+    for doc in visible:
+        token = _callback_token(doc)
+        if not token:
+            continue
+        callsign = (_identity(doc) or "Plane")[:12]
+        row: list[InlineKeyboardButton] = []
+        adsb_url = _adsb_url(doc)
+        if adsb_url:
+            row.append(InlineKeyboardButton(f"ADSB · {callsign}", url=adsb_url))
+        row.append(InlineKeyboardButton(f"More Info · {callsign}", callback_data=f"{MORE_PREFIX}{token}"))
+        keyboard_rows.append(row)
+
+    lines.append(
+        "\n<i>Live CPA is authoritative. 30–60 min history entries remain shadow forecasts.</i>"
+    )
+    markup = InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
+    return "\n".join(lines), markup
+
+
 def render_next60(now: datetime, docs: list[dict[str, Any]]) -> str:
+    """Compatibility text renderer retained for Prediction Lab/replay callers.
+
+    The Telegram command uses ``render_next60_native``. This renderer keeps the
+    older evidence wording available to tests and non-interactive consumers.
+    """
     buckets: dict[str, list[dict[str, Any]]] = {
         "0–15 min": [],
         "15–30 min": [],
@@ -90,38 +197,34 @@ def render_next60(now: datetime, docs: list[dict[str, Any]]) -> str:
         if cpa is None:
             continue
         horizon = (cpa - now).total_seconds() / 60.0
-        if horizon < 0 or horizon > 60:
-            continue
-        buckets[_bucket(horizon)].append(doc)
+        if 0 <= horizon <= 60:
+            buckets[_bucket(horizon)].append(doc)
 
-    lines = [
-        "✈️ <b>Plane Alerts · Next 60 Minutes</b>",
-        "<i>v4.1 live + Prediction Lab forecast</i>",
-    ]
-    any_rows = False
+    lines = ["✈️ <b>Plane Alerts · Next 60 Minutes</b>"]
     for label in ("0–15 min", "15–30 min", "30–60 min"):
-        rows = buckets[label]
         lines.append(f"\n<b>{label}</b>")
+        rows = sorted(buckets[label], key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
         if not rows:
             lines.append("No current candidates.")
             continue
-        any_rows = True
-        rows.sort(key=lambda d: _aware(d.get("predicted_cpa_at")) or now)
-        lines.extend(_row(now, row) for row in rows[:10])
-
-    if not any_rows:
-        lines.append(
-            "\nNo next-hour candidates are available right now. New flight numbers need observed route history before the longer-range shadow system can forecast them."
-        )
+        for doc in rows:
+            callsign = html.escape(_identity(doc) or "Unknown")
+            confidence = html.escape(str(doc.get("confidence") or "Low"))
+            if doc.get("source") == "live":
+                stage = html.escape(str(doc.get("stage") or "live"))
+                evidence = f"live trajectory · {stage}"
+            else:
+                days = int(doc.get("historical_days") or 0)
+                evidence = f"history shadow · {days} day{'s' if days != 1 else ''}"
+            lines.append(
+                f"• <b>{callsign}</b> · {_eta_text(now, doc)} · {_distance_text(doc)}\n"
+                f"  confidence {confidence} · {evidence}"
+            )
 
     lines.append(
-        "\n<i>Live trajectory/CPA is preferred when available. 30–60 min history entries are shadow estimates, not guaranteed alerts. Missing ADS-B coverage is not scored as a hit or miss.</i>"
+        "\n<i>Live trajectory/CPA is preferred when available. 30–60 min history entries are shadow estimates, not guaranteed alerts.</i>"
     )
     return "\n".join(lines)
-
-
-def _identity(doc: dict[str, Any]) -> str:
-    return str(doc.get("callsign") or doc.get("aircraft_icao24") or "").strip().upper()
 
 
 async def _history_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
@@ -153,6 +256,16 @@ async def _history_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
 
 
 async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
+    type_cache: dict[str, str] = {}
+    try:
+        # The monitor already learns aircraft type from free ADS-B providers.
+        # Reuse that bounded in-memory cache instead of making another network call.
+        from app.worker.monitor import get_provider_manager
+
+        type_cache = dict(getattr(get_provider_manager(), "_type_cache", {}) or {})
+    except Exception:
+        type_cache = {}
+
     cursor = get_db()["approach_states"].find(
         {
             "user_id": user_id,
@@ -178,11 +291,13 @@ async def _live_docs(user_id: int, now: datetime) -> list[dict[str, Any]]:
             continue
         if eta_s < 0 or eta_s > 3600:
             continue
-        callsign = str(state.get("route_callsign") or state.get("aircraft_icao24") or "Unknown").upper()
+        icao = str(state.get("aircraft_icao24") or "").lower().strip()
+        callsign = str(state.get("route_callsign") or icao or "Unknown").upper()
+        aircraft_type = str(state.get("aircraft_type") or type_cache.get(icao) or "").upper().strip()
         docs.append({
             "callsign": callsign,
-            "aircraft_icao24": state.get("aircraft_icao24"),
-            "aircraft_type": state.get("aircraft_type"),
+            "aircraft_icao24": icao,
+            "aircraft_type": aircraft_type,
             "predicted_cpa_at": now + timedelta(seconds=eta_s),
             "prediction_horizon_s": eta_s,
             "predicted_closest_km": state.get("projected_closest_km"),
@@ -218,13 +333,6 @@ async def build_next60_docs(user_id: int, now: datetime) -> list[dict[str, Any]]
     return docs[:MAX_ROWS]
 
 
-def _next60_web_app_url() -> str | None:
-    base = settings.webhook_url.strip().rstrip("/")
-    if not base.lower().startswith("https://"):
-        return None
-    return f"{base}/next60-ui"
-
-
 async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     user = update.effective_user
@@ -237,29 +345,51 @@ async def cmd_next60(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await message.reply_text("Finish /start setup first so Plane Alerts knows which location to forecast for.")
         return
 
-    web_app_url = _next60_web_app_url()
-    if web_app_url:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
-            "Open Next 60",
-            web_app=WebAppInfo(url=web_app_url),
-        )]])
-        await message.reply_text(
-            "✈️ <b>Next 60 Minutes</b>\nLive trajectory + Prediction Lab forecast.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-            disable_web_page_preview=True,
-        )
-        return
-
     now = datetime.now(timezone.utc)
     docs = await build_next60_docs(user.id, now)
+    text, keyboard = render_next60_native(now, docs)
     await message.reply_text(
-        render_next60(now, docs),
+        text,
         parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
         disable_web_page_preview=True,
     )
 
 
+async def cb_next60_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    query = update.callback_query
+    user = update.effective_user
+    if query is None or user is None or not query.data:
+        raise ApplicationHandlerStop
+
+    token = query.data[len(MORE_PREFIX):]
+    now = datetime.now(timezone.utc)
+    docs = await build_next60_docs(user.id, now)
+    selected = next((doc for doc in docs if _callback_token(doc) == token), None)
+
+    if selected is None:
+        await query.answer("Forecast changed. Run /next60 again.", show_alert=True)
+        raise ApplicationHandlerStop
+
+    await query.answer()
+    if query.message is not None:
+        adsb_url = _adsb_url(selected)
+        detail_keyboard = (
+            InlineKeyboardMarkup([[InlineKeyboardButton("Open in ADSB", url=adsb_url)]])
+            if adsb_url
+            else None
+        )
+        await query.message.reply_text(
+            _detail_text(now, selected),
+            parse_mode=ParseMode.HTML,
+            reply_markup=detail_keyboard,
+            disable_web_page_preview=True,
+        )
+    raise ApplicationHandlerStop
+
+
 def register_next60_handlers(app: Application) -> None:
+    app.add_handler(CallbackQueryHandler(cb_next60_more, pattern=rf"^{MORE_PREFIX}"), group=-1)
     app.add_handler(CommandHandler("next60", cmd_next60))
     app.add_handler(CommandHandler("forecast", cmd_next60))
