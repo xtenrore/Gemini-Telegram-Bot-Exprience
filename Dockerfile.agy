@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    AGY_STATE_DIR=/agy-state \
+    AGY_WORKSPACE_DIR=/app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    dbus-x11 \
+    git \
+    gnome-keyring \
+    libsecret-tools \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-agy.txt .
+RUN pip install --no-cache-dir -r requirements-agy.txt
+
+# Official Google Antigravity CLI installer. Keep the binary outside HOME so
+# HOME can live entirely on the persistent Railway volume at runtime.
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --skip-path --skip-aliases \
+    && test -x /root/.local/bin/agy \
+    && ln -s /root/.local/bin/agy /usr/local/bin/agy \
+    && agy --version
+
+COPY . .
+RUN chmod +x /app/scripts/agy-worker-entrypoint.sh /app/scripts/agy_record_finding.py
+
+EXPOSE 8090
+CMD ["/app/scripts/agy-worker-entrypoint.sh"]
