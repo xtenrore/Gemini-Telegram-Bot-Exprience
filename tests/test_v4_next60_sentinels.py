@@ -21,13 +21,29 @@ def test_next60_renders_all_horizon_buckets_and_shadow_warning():
             "predicted_closest_km": 8.5,
             "historical_days": 3,
             "confidence": "High",
+            "source": "history",
         })
     text = render_next60(now, docs)
     assert "0–15 min" in text
     assert "15–30 min" in text
     assert "30–60 min" in text
     assert "THY1" in text and "BAW2" in text and "DLH3" in text
-    assert "shadow/history-based" in text
+    assert "history entries are shadow estimates" in text
+
+
+def test_next60_marks_live_trajectory_source():
+    now = datetime(2026, 9, 18, 16, 0, tzinfo=timezone.utc)
+    text = render_next60(now, [{
+        "callsign": "THY1017",
+        "predicted_cpa_at": now + timedelta(minutes=6),
+        "prediction_horizon_s": 360,
+        "predicted_closest_km": 4.2,
+        "confidence": "High",
+        "stage": "camera_ready",
+        "source": "live",
+    }])
+    assert "live trajectory" in text
+    assert "camera_ready" in text
 
 
 def test_europe_sentinel_network_is_spread_and_unique():
