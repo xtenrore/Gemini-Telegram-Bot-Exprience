@@ -1,8 +1,8 @@
-"""Production guard for destination-near-observer ETA false positives.
+"""Production guard for destination-aware ETA false positives.
 
 Keeps deterministic CPA authoritative for real observed presence, but prevents a
 straight-line projection from advertising an arrival as approaching the observer
-when the resolved destination geometry proves a turn must happen first.
+when resolved destination geometry proves a turn must happen first.
 """
 from __future__ import annotations
 
@@ -61,22 +61,20 @@ def _destination_aware_arrival_guard(**kwargs):
         float(destination.latitude), float(destination.longitude),
     )
     destination_margin = alert_radius_km + max(8.0, alert_radius_km * 0.35)
-    if observer_destination > destination_margin:
-        return result
+    destination_near_observer = observer_destination <= destination_margin
 
     terminal_phase = destination_distance <= 160.0 and (
         (altitude_m is not None and float(altitude_m) <= 8000.0)
         or (vertical_rate_mps is not None and float(vertical_rate_mps) <= -0.25)
     )
 
-    # A resolved airport close to the observer is not, by itself, enough to
-    # suppress a real overflight. Before terminal phase require geometric proof:
-    # the naive straight-line CPA would carry the aircraft materially farther
-    # from its known destination, and the current heading conflicts with the
-    # destination bearing. This catches arrivals that must turn before reaching
-    # the observer without hiding aircraft genuinely tracking through the radius.
+    # Before terminal descent, a known destination can still prove that the
+    # straight-vector observer CPA is impossible: the projected CPA would carry
+    # the aircraft materially farther from its destination while its current
+    # heading conflicts with the destination bearing. This is stronger evidence
+    # than altitude alone and fixes high-altitude pre-terminal false alerts.
     projected_conflict = False
-    if projected_path is not None:
+    if destination_distance <= 160.0 and projected_path is not None:
         cpa_destination = route_guard._projected_cpa_destination_distance(
             projected_path,
             observer_lat=float(observer_lat),
@@ -99,16 +97,20 @@ def _destination_aware_arrival_guard(**kwargs):
                 and heading_conflict
             )
 
-    if not terminal_phase and not projected_conflict:
+    # A terminal-phase veto without projected conflict is intentionally limited
+    # to users close to the destination. A strong projected conflict is allowed
+    # farther away because it independently proves the straight-line CPA would
+    # require the flight to move away from its resolved destination.
+    if not projected_conflict and not (terminal_phase and destination_near_observer):
         return result
 
     reason = (
-        f"known destination {destination.code} is within observer range; "
-        "terminal arrival makes straight-line observer CPA unreliable"
-        if terminal_phase
+        f"known destination {destination.code} requires a turn before observer CPA; "
+        "straight-line projection moves away from the destination"
+        if projected_conflict
         else (
-            f"known destination {destination.code} requires a turn before observer CPA; "
-            "straight-line projection moves away from the destination"
+            f"known destination {destination.code} is within observer range; "
+            "terminal arrival makes straight-line observer CPA unreliable"
         )
     )
     return replace(

@@ -1,9 +1,11 @@
-"""Plane? v3.6 priority-aware shared ADS-B scheduling.
+"""Plane? v3.6 priority-aware shared ADS-B scheduling used by the v3.7 runtime.
 
-v3.6 keeps the v3.5 shared-provider architecture, then layers per-user admin
-controls on top. Priority users are evaluated first and keep their shared region
-on the 5-second hot cadence. Delay Time is a minimum per-user evaluation delay,
-so administrators can slow individual users without multiplying provider calls.
+v3.7 intentionally keeps the proven v3.6 shared-provider architecture. The new
+live map consumes the same bounded history and does not introduce another
+provider polling loop. Priority users are still evaluated first and their shared
+region stays on the 5-second hot cadence. Delay Time remains a minimum per-user
+evaluation delay, so administrators can slow individual users without
+multiplying provider calls.
 """
 from __future__ import annotations
 
@@ -91,7 +93,7 @@ async def _record_v36_metrics(
         await system_status_col().update_one(
             {"_id": "monitor_worker"},
             {"$set": {
-                "plane_version": "3.6.0",
+                "plane_version": "3.7.0",
                 "shared_regions_last_cycle": region_count,
                 "provider_queries_last_cycle": provider_queries,
                 "shared_snapshot_cache_hits_last_cycle": cache_hits,
@@ -103,7 +105,7 @@ async def _record_v36_metrics(
             upsert=True,
         )
     except Exception:
-        logger.debug("Unable to persist v3.6 polling metrics", exc_info=True)
+        logger.debug("Unable to persist v3.7 polling metrics", exc_info=True)
 
 
 async def _monitor_cycle_v36() -> None:
@@ -173,15 +175,11 @@ async def _monitor_cycle_v36() -> None:
         )
 
         try:
-            # Priority work never waits for v3.5's initial multi-region staggering.
             sent, poll = await v35._process_shared_region(
                 active_region,
                 cycle_number=cycle_number,
                 stagger=stagger and not region_has_priority,
             )
-            # On a priority region's first ever poll there was no snapshot to
-            # promote before the request. Promote the newly-created snapshot too,
-            # otherwise that first quiet snapshot would fall back to 15 seconds.
             if region_has_priority:
                 _promote_priority_region(region.key, time.monotonic())
             notifications += sent
@@ -193,7 +191,7 @@ async def _monitor_cycle_v36() -> None:
                 _last_user_processed_mono[int(user["user_id"])] = completed_at
         except Exception:
             logger.exception(
-                "v36_shared_region_failed region=%s users=%d priority=%s",
+                "v37_shared_region_failed region=%s users=%d priority=%s",
                 region.key,
                 len(due_users),
                 region_has_priority,
@@ -213,7 +211,7 @@ async def _monitor_cycle_v36() -> None:
         notifications_paused=paused_users,
     )
     logger.info(
-        "v36_cycle users=%d processed=%d priority=%d deferred=%d paused=%d regions=%d provider_queries=%d cache_hits=%d notifications=%d duration_ms=%.1f",
+        "v37_cycle users=%d processed=%d priority=%d deferred=%d paused=%d regions=%d provider_queries=%d cache_hits=%d notifications=%d duration_ms=%.1f",
         len(users),
         processed_users,
         priority_users,
@@ -231,4 +229,4 @@ async def run_monitor_cycle_v36() -> None:
     try:
         await _monitor_cycle_v36()
     except Exception:
-        logger.exception("Plane? v3.6 monitor cycle failed unexpectedly")
+        logger.exception("Plane? v3.7 monitor cycle failed unexpectedly")

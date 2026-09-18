@@ -1,8 +1,11 @@
-"""Telegram notifications with concise v3.4 live approach message updates."""
+"""Telegram notifications with concise v3.7 live approach message updates."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from html import escape
 from urllib.parse import quote
@@ -13,13 +16,16 @@ from telegram.error import BadRequest, Forbidden, TelegramError
 
 from app.aircraft.models import NormalizedAircraft
 from app.config import settings
-from app.database import get_db, users_col
+from app.database import get_db, locations_col, users_col
 from app.photography.keyboards import notification_actions_keyboard
 
 logger = logging.getLogger(__name__)
 _send_semaphore = asyncio.Semaphore(20)
 _MIN_SEND_INTERVAL = 0.05
 _bot_instance: Bot | None = None
+_LOCATION_CACHE_TTL_S = 600.0
+_LOCATION_CACHE_MAX = 2048
+_location_cache: OrderedDict[int, tuple[float, float, float]] = OrderedDict()
 
 
 def _safe(v: str) -> str:
@@ -53,8 +59,24 @@ def _identity(ac: NormalizedAircraft) -> str:
     return f"<b>{aircraft_type}</b>"
 
 
-def _map_link(ac: NormalizedAircraft) -> str:
-    return f'<a href="https://globe.adsb.fi/?icao={quote(ac.icao24 or "", safe="")}">Live map</a>'
+def _public_base_url() -> str:
+    base = settings.webhook_url.strip()
+    if base:
+        return base.rstrip("/")
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        return f"https://{railway_domain}".rstrip("/")
+    return ""
+
+
+def _map_link(ac: NormalizedAircraft, notification_id: str = "") -> str:
+    links: list[str] = []
+    base = _public_base_url()
+    if base and notification_id:
+        token = quote(notification_id, safe="")
+        links.append(f'<a href="{base}/live/{token}">Live relative map</a>')
+    links.append(f'<a href="https://globe.adsb.fi/?icao={quote(ac.icao24 or "", safe="")}">ADSB.fi</a>')
+    return " · ".join(links)
 
 
 def _flight_status_line(ac: NormalizedAircraft, pred) -> str:
@@ -101,19 +123,14 @@ def _approach_text(
     ac,
     pred,
     stage,
+    notification_id="",
     camera=None,
     environment=None,
     previous_cpa_km=None,
     observed_closest_km=None,
     prediction_changed=False,
 ) -> str:
-    """Build a compact glanceable Telegram alert.
-
-    Detailed framing, angular motion, focal plans, clarity scores, contrail basis,
-    and other diagnostics remain available behind the camera/settings actions.
-    The live notification itself intentionally keeps only the information needed
-    to decide whether to get the camera ready.
-    """
+    """Build a compact glanceable Telegram alert."""
     title = {
         "prepare": "📡 <b>NEXT SHOT</b>",
         "camera_ready": "📷 <b>CAMERA READY</b>",
@@ -130,7 +147,7 @@ def _approach_text(
             lines.append(f"Alert cancelled · CPA <b>{cpa}</b> (was {float(previous_cpa_km):.1f} km)")
         else:
             lines.append(f"Alert cancelled · CPA <b>{cpa}</b>")
-        lines.append(_map_link(ac))
+        lines.append(_map_link(ac, notification_id))
         return "\n".join(lines)
 
     if stage == "passed":
@@ -139,7 +156,7 @@ def _approach_text(
         if ac.altitude is not None:
             passed_parts.append(f"{int(round(ac.altitude * 3.28084)):,} ft")
         lines.append(" · ".join(passed_parts))
-        lines.append(_map_link(ac))
+        lines.append(_map_link(ac, notification_id))
         return "\n".join(lines)
 
     countdown = camera.best_window_start_s if camera and camera.best_window_start_s is not None else pred.time_to_cpa_s
@@ -171,7 +188,7 @@ def _approach_text(
             seconds = int(moon_crossing.time_to_min_s or 0)
             lines.append(f"🌙 Moon crossing candidate in ~{seconds}s")
 
-    lines.append(_map_link(ac))
+    lines.append(_map_link(ac, notification_id))
     return "\n".join(lines)
 
 
@@ -179,6 +196,7 @@ def _basic_alert_text(
     aircraft: NormalizedAircraft,
     distance_km: float,
     eta_seconds: float | None,
+    notification_id: str = "",
 ) -> str:
     title = "🚀 <b>EARLY WARNING</b>" if eta_seconds is not None and eta_seconds > 0 else "✈️ <b>AIRCRAFT ALERT</b>"
     lines = [title, _identity(aircraft)]
@@ -190,8 +208,28 @@ def _basic_alert_text(
     if aircraft.ground_speed is not None:
         details.append(f"{int(round(aircraft.ground_speed))} kt")
     lines.append(" · ".join(details))
-    lines.append(_map_link(aircraft))
+    lines.append(_map_link(aircraft, notification_id))
     return "\n".join(lines)
+
+
+async def _observer_coordinates(user_id: int) -> tuple[float, float] | None:
+    now = time.monotonic()
+    cached = _location_cache.get(int(user_id))
+    if cached and cached[0] > now:
+        _location_cache.move_to_end(int(user_id))
+        return cached[1], cached[2]
+    if cached:
+        _location_cache.pop(int(user_id), None)
+
+    doc = await locations_col().find_one({"user_id": user_id}, {"latitude": 1, "longitude": 1})
+    if not doc or doc.get("latitude") is None or doc.get("longitude") is None:
+        return None
+    value = (now + _LOCATION_CACHE_TTL_S, float(doc["latitude"]), float(doc["longitude"]))
+    _location_cache[int(user_id)] = value
+    _location_cache.move_to_end(int(user_id))
+    while len(_location_cache) > _LOCATION_CACHE_MAX:
+        _location_cache.popitem(last=False)
+    return value[1], value[2]
 
 
 async def _record_photo_snapshot(
@@ -204,27 +242,30 @@ async def _record_photo_snapshot(
     if not notification_id:
         return
     now = datetime.now(timezone.utc)
+    observer = await _observer_coordinates(user_id)
+    values = {
+        "user_id": user_id,
+        "aircraft_icao24": aircraft.icao24 or "",
+        "aircraft_type": aircraft.aircraft_type or aircraft.display_type or "",
+        "callsign": aircraft.callsign or "",
+        "distance_km": float(distance_km),
+        "altitude_m": aircraft.altitude,
+        "speed_ms": aircraft.velocity,
+        "heading_deg": aircraft.heading,
+        "vertical_rate_mps": getattr(aircraft, "vertical_rate_mps", None),
+        "position_age_s": getattr(aircraft, "position_age_s", None),
+        "latitude": aircraft.latitude,
+        "longitude": aircraft.longitude,
+        "eta_seconds": eta_seconds,
+        "captured_at": now,
+        "expires_at": now + timedelta(hours=6),
+    }
+    if observer:
+        values["observer_latitude"] = observer[0]
+        values["observer_longitude"] = observer[1]
     await get_db()["photo_alert_snapshots"].update_one(
         {"_id": notification_id, "user_id": user_id},
-        {
-            "$set": {
-                "user_id": user_id,
-                "aircraft_icao24": aircraft.icao24 or "",
-                "aircraft_type": aircraft.aircraft_type or aircraft.display_type or "",
-                "callsign": aircraft.callsign or "",
-                "distance_km": float(distance_km),
-                "altitude_m": aircraft.altitude,
-                "speed_ms": aircraft.velocity,
-                "heading_deg": aircraft.heading,
-                "vertical_rate_mps": getattr(aircraft, "vertical_rate_mps", None),
-                "position_age_s": getattr(aircraft, "position_age_s", None),
-                "latitude": aircraft.latitude,
-                "longitude": aircraft.longitude,
-                "eta_seconds": eta_seconds,
-                "captured_at": now,
-                "expires_at": now + timedelta(hours=6),
-            }
-        },
+        {"$set": values},
         upsert=True,
     )
 
@@ -247,6 +288,7 @@ async def send_or_update_approach(
         aircraft,
         prediction,
         stage,
+        notification_id,
         camera,
         environment,
         previous_cpa_km,
@@ -336,7 +378,7 @@ async def send_aircraft_notification(
     notification_id: str = "",
     eta_seconds: float | None = None,
 ) -> bool:
-    msg = _basic_alert_text(aircraft, distance_km, eta_seconds)
+    msg = _basic_alert_text(aircraft, distance_km, eta_seconds, notification_id)
     if notification_id:
         try:
             await _record_photo_snapshot(user_id, aircraft, distance_km, notification_id, eta_seconds)
