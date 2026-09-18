@@ -26,6 +26,7 @@ from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
 from app.logging_security import configure_secure_logging
 from app.photography.telegram import register_photography_handlers
+from app.sentinel_network import EUROPE_SENTINELS, run_sentinel_network
 from app.worker.monitor import get_cycle_stats, init_services
 from app.worker.v36 import run_monitor_cycle_v36 as run_monitor_cycle
 
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
+    sentinel_task: asyncio.Task | None = None
 
     async def _reconnect_db_loop() -> None:
         while True:
@@ -100,6 +102,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_services()
 
     monitor_task = asyncio.create_task(_monitor_loop(), name="aircraft-monitor")
+    sentinel_task = asyncio.create_task(run_sentinel_network(), name="prediction-lab-europe-sentinels")
+    logger.info("Prediction Lab Europe sentinel network enabled: regions=%d shadow_only=true", len(EUROPE_SENTINELS))
 
     bot_token = settings.telegram_bot_token.strip()
     if bot_token and bot_token != "your_bot_token_from_botfather":
@@ -120,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         BotCommand("start", "Set up aircraft alerts"),
                         BotCommand("status", "Show monitoring status"),
                         BotCommand("next60", "Planes expected in the next 60 minutes"),
+                        BotCommand("forecast", "Alias for the Next 60 Minutes forecast"),
                         BotCommand("location", "Set monitoring / shooting location"),
                         BotCommand("preferences", "Choose aircraft types"),
                         BotCommand("camera", "Set your camera body"),
@@ -165,10 +170,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as exc:
             logger.warning("Error stopping Telegram app: %s", exc)
 
-    for task in (monitor_task, db_reconnect_task):
+    for task in (monitor_task, sentinel_task, db_reconnect_task):
         if task and not task.done():
             task.cancel()
-    for task in (monitor_task, db_reconnect_task):
+    for task in (monitor_task, sentinel_task, db_reconnect_task):
         if task:
             try:
                 await task
@@ -222,6 +227,7 @@ async def health_check() -> dict[str, Any]:
             bot_status = "stopped"
 
     worker_info: dict[str, Any] = {"status": "unknown"}
+    sentinel_info: dict[str, Any] = {"enabled": True, "regions": len(EUROPE_SENTINELS), "mode": "shadow-only"}
     try:
         doc = await system_status_col().find_one({"_id": "monitor_worker"})
         if doc:
@@ -245,6 +251,15 @@ async def health_check() -> dict[str, Any]:
             stats = get_cycle_stats()
             if stats.get("total_cycles", 0) > 0:
                 worker_info = {"status": "active (in-process)", "version": "4.0.0", "total_cycles": stats.get("total_cycles", 0)}
+        sentinel_doc = await system_status_col().find_one({"_id": "prediction_lab_sentinels"})
+        if sentinel_doc:
+            sentinel_info.update({
+                "last_region": sentinel_doc.get("last_region"),
+                "last_provider": sentinel_doc.get("last_provider"),
+                "last_aircraft": sentinel_doc.get("last_aircraft", 0),
+                "last_points_stored": sentinel_doc.get("last_points_stored", 0),
+                "poll_interval_seconds": sentinel_doc.get("poll_interval_seconds", 30),
+            })
     except Exception:
         pass
 
@@ -255,10 +270,12 @@ async def health_check() -> dict[str, Any]:
         "bot_mode": bot_status,
         "uptime_seconds": round(time.time() - _server_start_time, 1),
         "worker": worker_info,
+        "sentinel_network": sentinel_info,
         "spotting_intelligence": {
             "deterministic_core": True,
             "prediction_lab": True,
             "next_60_shadow": True,
+            "europe_sentinel_shadow": True,
             "gemini_advisor_enabled": bool(settings.gemini_api_key.strip()),
             "weather_provider": "Open-Meteo",
             "shared_adaptive_adsb_polling": True,
@@ -303,6 +320,7 @@ async def stats() -> dict[str, Any]:
         "cooldown_minutes": settings.cooldown_minutes,
         "cycle_stats": get_cycle_stats(),
         "shared_polling": worker_metrics,
+        "prediction_lab_sentinel_regions": len(EUROPE_SENTINELS),
     }
 
 
