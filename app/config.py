@@ -69,7 +69,69 @@ class Settings(BaseSettings):
     # v3.2 Gemini photography intelligence
     gemini_photo_model: str = "gemini-3.8-flash"
     gemini_photo_fallback_model: str = "gemini-3.5-flash-lite"
-    gemini_photo_timeout_seconds: float = 30.0
+    gemini_photo_timeout_seconds: float = 8.0
+    gemini_photo_cache_seconds: int = 900
+    gemini_photo_cache_max_entries: int = 256
+    gemini_photo_max_calls_per_hour: int = 30
+    gemini_photo_max_calls_per_day: int = 180
+
+    # Open-Meteo deterministic weather/environment intelligence
+    open_meteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
+    open_meteo_timeout_seconds: float = 8.0
+    open_meteo_cache_seconds: int = 180
+
+    # v3.4 advanced deterministic environment / upper-air inputs
+    open_meteo_pressure_url: str = "https://api.open-meteo.com/v1/forecast"
+    upper_air_cache_seconds: int = 900
+    upper_air_timeout_seconds: float = 10.0
+    atmospheric_visibility_floor_km: float = 1.0
+    contrail_ice_rh_threshold_percent: float = 100.0
+
+    # v3.4 deterministic photography / spotting intelligence defaults
+    photo_default_shutter_floor: int = 1600
+    photo_default_preferred_shutter: int = 2000
+    photo_default_auto_iso_max: int = 1600
+    photo_default_aperture: float = 8.0
+    photo_frame_safe_fill_percent: float = 78.0
+    photo_frame_warning_fill_percent: float = 90.0
+    photo_frame_target_fill_percent: float = 68.0
+    photo_prepare_lead_seconds: int = 180
+    photo_camera_ready_lead_seconds: int = 60
+    photo_now_lead_seconds: int = 12
+
+    # v3.4 astronomy / crossing safety
+    sun_crossing_safety_message: str = (
+        "Never look at or aim an optical viewfinder directly at the Sun. "
+        "Use live-view/electronic viewing and proper solar safety equipment."
+    )
+
+    # v3.4 caches / bounded memory
+    trajectory_history_seconds: int = 120
+    trajectory_history_max_samples: int = 120
+    trajectory_history_ttl_seconds: int = 300
+    aircraft_state_ttl_seconds: int = 300
+    weather_cache_max_entries: int = 128
+    upper_air_cache_max_entries: int = 128
+
+    # v3.4 confidence / prediction thresholds
+    max_adsb_position_age_seconds: float = 30.0
+    confidence_high_threshold: float = 0.82
+    confidence_medium_threshold: float = 0.58
+    confidence_low_threshold: float = 0.35
+    approach_cancel_buffer_km: float = 2.0
+    trajectory_reprediction_seconds: float = 5.0
+
+    # v3.4 alert lifecycle / notification update behavior
+    telegram_live_update_seconds: int = 12
+    alert_prepare_enabled: bool = True
+    alert_camera_ready_enabled: bool = True
+    alert_photo_now_enabled: bool = True
+
+    # v3.4 deterministic fallback text behavior
+    gemini_optional_explanation_enabled: bool = True
+    gemini_optional_explanation_timeout_seconds: float = 4.0
+
+    # Weather / photography aliases retained for older modules
     open_meteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
     open_meteo_air_quality_url: str = "https://air-quality-api.open-meteo.com/v1/air-quality"
     photography_http_timeout_seconds: float = 12.0
@@ -91,6 +153,11 @@ class Settings(BaseSettings):
     # Admin
     admin_telegram_id: int | None = None
     admin_password: str = ""
+
+    # Private Antigravity prediction-lab worker. The worker is reachable only on
+    # Railway private networking and additionally requires a shared bearer token.
+    agy_worker_url: str = ""
+    agy_worker_token: str = ""
 
     # Server
     host: str = "0.0.0.0"
