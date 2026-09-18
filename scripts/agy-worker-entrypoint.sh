@@ -107,6 +107,12 @@ if enable:
         supervisor['goal'] = goal
     if not was_enabled:
         supervisor['next_run_at'] = 0
+    # Changing this token deliberately forces one immediate run. Persisting the
+    # consumed token means ordinary restarts never reset a quota-wait deadline.
+    force_token = os.environ.get('AGY_FORCE_RUN_TOKEN', '').strip()
+    if force_token and supervisor.get('last_force_run_token') != force_token:
+        supervisor['last_force_run_token'] = force_token
+        supervisor['next_run_at'] = 0
     stmp = supervisor_path.with_suffix('.tmp')
     stmp.write_text(json.dumps(supervisor, indent=2, sort_keys=True))
     stmp.replace(supervisor_path)
