@@ -1,0 +1,39 @@
+{
+  "case_id": "v43-thy3bj-uncertain-close-pass-2026-09-19",
+  "source": "Railway production telemetry",
+  "classification": "decision-level reconstruction",
+  "raw_adsb_track_available": false,
+  "score_missing_coverage": false,
+  "note": "Production telemetry proves the decision sequence and observed close pass, but does not retain the complete raw ADS-B track. This fixture must not be treated as a full trajectory replay.",
+  "encounter": {
+    "flight": "THY3BJ",
+    "icao24": "4bb219",
+    "destination": "TBS",
+    "route_veto": false,
+    "timeline": [
+      {"at": "2026-09-19T10:47:54.937Z", "event": "approach_alert_held", "stable_cpa_km": 0.34294917339126446, "candidate_cpa_km": 0.34, "state": "Prediction uncertain", "confirmation": "0/3"},
+      {"at": "2026-09-19T10:48:10.358Z", "event": "approach_alert_held", "stable_cpa_km": 0.25997450680132983, "candidate_cpa_km": 0.26, "state": "Prediction uncertain", "confirmation": "0/3"},
+      {"at": "2026-09-19T10:48:14.261Z", "event": "adsb_outlier_rejected", "jump_km": 0.0, "sample_age_s": 23.1},
+      {"at": "2026-09-19T10:48:32.456Z", "event": "adsb_outlier_rejected", "jump_km": 0.0, "sample_age_s": 39.8},
+      {"at": "2026-09-19T10:48:52.878Z", "event": "approach_alert_held", "stable_cpa_km": 6.299460750102413, "candidate_cpa_km": 6.30, "state": "Prediction uncertain", "confirmation": "0/3"},
+      {"at": "2026-09-19T10:49:00.256Z", "event": "approach_route_veto", "reason": "v4.2 PASSED_LOCKED: ensemble=0.147 live=0.000"},
+      {"at": "2026-09-19T10:49:01.293Z", "event": "approach_passed", "observed_distance_km": 2.15}
+    ],
+    "failure": "A physically real 2.15 km pass remained at confirmation 0/3 while predicted CPA was deeply inside the configured radius. Freshness/uncertainty prevented qualification, and stale zero-jump samples were rejected, so the system had no bounded direct-presence escape path before PASSED_LOCKED."
+  },
+  "candidate_fix": {
+    "principle": "Do not lower the general confidence threshold. Add a deterministic emergency direct-presence path for fresh physical evidence only.",
+    "proposal": "If an aircraft has at least two fresh independent position samples, is physically inside the user's configured radius, distance is decreasing or CPA is imminent, and route veto is false, allow direct physical presence to bypass Prediction uncertain confirmation holding. Stale/rejected samples, missing coverage, history-only evidence, or a single sample must never trigger this override.",
+    "regression_test": [
+      "Replay the decision-level THY3BJ sequence with synthetic fresh samples consistent with the logged CPA/observed-distance bounds and assert a real in-radius approach cannot remain permanently at 0/3 until PASSED_LOCKED.",
+      "Assert stale samples at 23.1s and 39.8s do not count as confirmations or direct-presence evidence.",
+      "Assert missing ADS-B coverage produces unresolved/unknown, never success or miss.",
+      "Retain existing IST arrival/expected-turn Error Museum fixtures and assert they remain suppressed when the aircraft never physically enters the radius.",
+      "Assert a single anomalous in-radius sample cannot qualify without a second fresh physical sample."
+    ]
+  },
+  "runtime_constraints": {
+    "paid_ai_or_api_required": false,
+    "deterministic_only": true
+  }
+}
