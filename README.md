@@ -4,9 +4,21 @@ Plane Alerts is an aircraft-spotting alert system designed to predict whether an
 
 Live ADS-B motion, deterministic trajectory geometry, CPA/ETA calculations, flight-number route history, terminal-arrival logic, and prediction confidence drive the alert decision. AI is limited to investigation and explanation; it does not control live trajectory, CPA, ETA, pass/no-pass, qualification, cancellation, or notification timing.
 
-Current production release: **Plane Alerts v4.2.3**
+Current production release: **Plane Alerts v4.2.4**
 
 Telegram: **[@planebotnotifierbot](https://t.me/planebotnotifierbot)**
+
+## v4.2.4 — Five-second cadence jitter guard
+
+v4.2.4 fixes a scheduler-boundary issue found during live verification of v4.2.3. A priority user could be evaluated a fraction of a second before the strict five-second due threshold and then be deferred for a full extra cycle, creating an occasional roughly ten-second gap even though individual cycles were fast.
+
+Changes:
+
+- the per-user due-time gate now allows a bounded 250 ms scheduler tolerance;
+- a normal 4.8–5.0 second scheduler arrival is treated as the intended five-second check instead of being skipped;
+- checks that are materially early remain deferred;
+- longer custom delay settings receive the same maximum 250 ms tolerance rather than a proportional large advance;
+- shared ADS-B provider refresh cadence, CPA/ETA calculations, trajectory rules, route qualification, and alert thresholds are unchanged.
 
 ## v4.2.3 — Five-second cadence latency guard
 
