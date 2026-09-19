@@ -1,11 +1,7 @@
 """v4.4 profile setup mode chooser and contextual navigation."""
 from __future__ import annotations
 
-from copy import deepcopy
-from urllib.parse import urlencode
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.constants import ParseMode
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from app.alert_profiles import ensure_default_profile, get_profile
@@ -13,21 +9,23 @@ from app.bot import profile_handlers as guided
 from app.config import settings
 
 
-def _visual_url(profile_id: str = "") -> str:
+def _visual_url(profile_id: str = "", *, new_profile: bool = False) -> str:
     base = settings.webhook_url.strip().rstrip("/")
     if not base:
         return ""
-    query = urlencode({"profile_id": profile_id}) if profile_id else ""
-    return f"{base}/profile-setup-ui" + (f"?{query}" if query else "")
+    if new_profile:
+        return f"{base}/profile-setup-ui/new"
+    return f"{base}/profile-setup-ui/profile/{profile_id}"
 
 
 async def _show_mode(update: Update, profile_id: str, *, new_profile: bool = False) -> None:
     query = update.callback_query
     if query:
         await query.answer()
-    url = _visual_url(profile_id)
+    url = _visual_url(profile_id, new_profile=new_profile)
+    guided_callback = "pf44:gnew" if new_profile else f"pf44:guided:{profile_id}"
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton("Guided Setup", callback_data=("pf44:gnew" if new_profile else f"pf44:guided:{profile_id}"))],
+        [InlineKeyboardButton("Guided Setup", callback_data=guided_callback)],
     ]
     if url:
         rows.append([InlineKeyboardButton("Visual Setup", web_app=WebAppInfo(url=url))])
@@ -81,10 +79,7 @@ async def profile_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await guided._show(
             update,
             "<b>Visual Setup unavailable</b>\n\nThe public HTTPS app URL is not configured. Guided Setup remains fully available.",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("Guided Setup", callback_data="pf44:gnew")],
-                [InlineKeyboardButton("← Back to Profiles", callback_data="pf44:profiles")],
-            ]),
+            InlineKeyboardMarkup([[InlineKeyboardButton("← Back to Profiles", callback_data="pf44:profiles")]]),
         )
     raise ApplicationHandlerStop
 
@@ -99,9 +94,9 @@ async def cmd_preferences_v44(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def register_profile_mode_handlers_v44(app: Application) -> None:
-    # Run one group before the existing v4.3 profile router. Only entry points
-    # are intercepted; all Guided Setup callbacks continue through proven code.
+    # One group before the existing v4.3 profile router: only the entry points
+    # are intercepted; the proven Guided Setup state machine remains unchanged.
     group = -31
     app.add_handler(CommandHandler("preferences", cmd_preferences_v44), group=group)
-    app.add_handler(CallbackQueryHandler(intercept_profile_callback, pattern=r"^pf:(?:new|e:)") , group=group)
+    app.add_handler(CallbackQueryHandler(intercept_profile_callback, pattern=r"^pf:(?:new|e:)"), group=group)
     app.add_handler(CallbackQueryHandler(profile_mode_callback, pattern=r"^pf44:"), group=group)
