@@ -39,21 +39,6 @@ if "pytest" not in sys.modules:
     install_route_guard_v42()
     install_requalification_guard_v43()
 
-    # v4.4 specifically protects the short interval where a turning arrival's
-    # instantaneous tangent points toward the observer but continuing curved
-    # motion does not. It runs after the v4.3 cancellation latch so it can only
-    # add evidence-backed suppression; it cannot create an alert.
-    from app.intelligence.transient_turn_guard_v44 import install_transient_turn_guard_v44
-
-    install_transient_turn_guard_v44()
-
-    # Google Contrails and Decision Recorder adapters are installed before
-    # monitor.py binds imported helper functions. Google cache misses schedule
-    # background work and never add network latency to the five-second loop.
-    from app.v44_runtime import install_v44_runtime_adapters
-
-    install_v44_runtime_adapters()
-
     # Final hot-path protection: cap individual provider latency and prevent
     # stale ADS-B positions from creating brand-new approach alerts.
     from app.worker.critical_timing import install_critical_timing_guards
