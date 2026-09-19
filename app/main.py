@@ -1,4 +1,4 @@
-"""Plane Alerts v4.2 aircraft spotting intelligence, Prediction Lab, bot, and web server."""
+"""Plane Alerts v4.3 aircraft spotting intelligence, profiles, Prediction Lab, bot, and web server."""
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +25,8 @@ from app.aircraft.providers import close_http_client
 from app.bot.handlers import register_handlers
 from app.bot.next60 import build_next60_docs, register_next60_handlers
 from app.bot.next60_web import NEXT60_HTML, serialize_next60, validate_telegram_init_data
+from app.bot.profile_handlers import register_profile_handlers
+from app.bot.profile_legacy import register_profile_legacy_handlers
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
 from app.logging_security import configure_secure_logging
@@ -41,7 +43,7 @@ _server_start_time: float = time.time()
 async def _monitor_loop() -> None:
     """Run the ADS-B monitor in-process to fit small container memory limits."""
     logger.info(
-        "Integrated ADS-B worker enabled: base interval=%ds, shared polling + Plane Alerts v4.2 active",
+        "Integrated ADS-B worker enabled: base interval=%ds, shared polling + Plane Alerts v4.3 active",
         settings.poll_interval_seconds,
     )
     first_cycle_confirmed = False
@@ -76,7 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global telegram_app
 
     configure_secure_logging()
-    logger.info("Initializing Plane Alerts v4.2 Prediction Lab + Spotting Intelligence...")
+    logger.info("Initializing Plane Alerts v4.3 profiles + Prediction Lab + Spotting Intelligence...")
 
     db_reconnect_task: asyncio.Task | None = None
     monitor_task: asyncio.Task | None = None
@@ -116,6 +118,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # OAuth codes and interactive AGY input are never mistaken for
             # ordinary Plane Alerts setup text.
             register_agy_console_handlers(telegram_app)
+            # Legacy setup/location entry points are routed into profile-aware
+            # flows before both the profile state router and old catch-alls.
+            register_profile_legacy_handlers(telegram_app)
+            # v4.3 profile handlers use a negative group so profile callbacks
+            # and profile text/location states are handled before legacy catch-alls.
+            register_profile_handlers(telegram_app)
             register_handlers(telegram_app)
             register_next60_handlers(telegram_app)
             register_photography_handlers(telegram_app)
@@ -125,11 +133,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await telegram_app.bot.set_my_commands(
                     [
                         BotCommand("start", "Set up aircraft alerts"),
+                        BotCommand("profiles", "Manage alert profiles"),
                         BotCommand("status", "Show monitoring status"),
                         BotCommand("next60", "Planes expected in the next 60 minutes"),
                         BotCommand("forecast", "Alias for the Next 60 Minutes forecast"),
                         BotCommand("location", "Set monitoring / shooting location"),
-                        BotCommand("preferences", "Choose aircraft types"),
+                        BotCommand("preferences", "Choose aircraft and advanced filters"),
                         BotCommand("camera", "Set your camera body"),
                         BotCommand("lens", "Set the aircraft lens"),
                         BotCommand("photo", "Get live best-shot camera settings"),
@@ -163,7 +172,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    logger.info("Shutting down Plane Alerts v4.2...")
+    logger.info("Shutting down Plane Alerts v4.3...")
     if telegram_app:
         try:
             if telegram_app.updater and telegram_app.updater.running:
@@ -191,8 +200,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="Plane Alerts",
-    description="Deterministic real-time ADS-B spotting intelligence with v4.2 terminal-arrival qualification",
-    version="4.2.0",
+    description="Deterministic real-time ADS-B spotting intelligence with v4.3 profiles and inherited aircraft filters",
+    version="4.3.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -276,7 +285,7 @@ async def health_check() -> dict[str, Any]:
             is_stale = (time.time() - last_time) > (settings.poll_interval_seconds * 4)
             worker_info = {
                 "status": "active" if not is_stale else "stale",
-                "version": doc.get("plane_version", "4.2.0"),
+                "version": doc.get("plane_version", "4.3.0"),
                 "total_cycles": doc.get("total_cycles", 0),
                 "last_cycle_duration_ms": doc.get("last_cycle_duration_ms", 0.0),
                 "seconds_since_last_cycle": round(time.time() - last_time, 1),
@@ -291,7 +300,7 @@ async def health_check() -> dict[str, Any]:
         else:
             stats = get_cycle_stats()
             if stats.get("total_cycles", 0) > 0:
-                worker_info = {"status": "active (in-process)", "version": "4.2.0", "total_cycles": stats.get("total_cycles", 0)}
+                worker_info = {"status": "active (in-process)", "version": "4.3.0", "total_cycles": stats.get("total_cycles", 0)}
         sentinel_doc = await system_status_col().find_one({"_id": "prediction_lab_sentinels"})
         if sentinel_doc:
             sentinel_info.update({
@@ -306,7 +315,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "healthy" if db_ok else "degraded",
-        "version": "4.2.0",
+        "version": "4.3.0",
         "database_connected": db_ok,
         "bot_mode": bot_status,
         "uptime_seconds": round(time.time() - _server_start_time, 1),
@@ -323,6 +332,7 @@ async def health_check() -> dict[str, Any]:
             "shared_adaptive_adsb_polling": True,
             "priority_admin_controls": True,
             "monochrome_ui": True,
+            "alert_profiles": True,
         },
         "python_version": platform.python_version(),
     }
@@ -350,7 +360,7 @@ async def stats() -> dict[str, Any]:
     except Exception:
         pass
     return {
-        "version": "4.2.0",
+        "version": "4.3.0",
         "active_users": active_users,
         "total_users": total_users,
         "poll_interval_seconds": settings.poll_interval_seconds,

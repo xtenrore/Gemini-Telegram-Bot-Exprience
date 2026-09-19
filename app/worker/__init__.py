@@ -45,6 +45,13 @@ if "pytest" not in sys.modules:
 
     install_critical_timing_guards()
 
+    # v4.3 applies active-profile/category/aircraft filtering before the legacy
+    # matcher. Install it before v4.2.3 batching so one state prefetch still
+    # covers the whole user evaluation even when custom radii create groups.
+    from app.worker.profile_filter_guard_v43 import install_profile_filter_guard_v43
+
+    install_profile_filter_guard_v43()
+
     # v4.2.3 removes database fan-out and non-critical learning work from the
     # five-second alert path, and bounds a single shared provider refresh.
     from app.worker.cadence_guard_v423 import install_cadence_guard_v423
