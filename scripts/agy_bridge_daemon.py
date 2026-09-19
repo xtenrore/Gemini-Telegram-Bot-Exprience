@@ -8,7 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 from app import next_hour_shadow as next_hour_base
 from app.agy_prediction_bridge import sync_findings_to_handoff
-from app.agy_supervisor_bridge_v44 import build_supervisor_context_snapshot
+from app.agy_supervisor_bridge_v44 import build_supervisor_context_snapshot, sync_shadow_reviews
 from app.shadow_mongo_batch_v421 import update_next_hour_shadow, update_sentinel_shadow
 
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +24,6 @@ INDEX_REFRESH_INTERVAL_S = 3600.0
 
 
 def _ensure_shadow_indexes() -> None:
-    """Ensure private audit reads remain index-backed and bounded."""
     database = next_hour_base._db()
     if database is None:
         return
@@ -63,9 +62,6 @@ def main() -> int:
     next_index_refresh = 0.0
     next_hour_future: Future[dict[str, int]] | None = None
     sentinel_future: Future[dict[str, int]] | None = None
-
-    # At most one point-heavy shadow audit runs at once. Context refresh and
-    # finding handoff stay independent so AGY never competes with live alerts.
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agy-shadow")
     logger.info("Plane Alerts v4.4 supervisor bridge daemon starting")
 
@@ -101,10 +97,16 @@ def main() -> int:
             if next_hour_future is None and now >= next_hour_audit:
                 next_hour_future = executor.submit(update_next_hour_shadow)
                 next_hour_audit = float("inf")
-
             if sentinel_future is None and now >= next_sentinel_audit:
                 sentinel_future = executor.submit(update_sentinel_shadow)
                 next_sentinel_audit = float("inf")
+
+            try:
+                synced = sync_shadow_reviews()
+                if synced:
+                    logger.info("Synced %d non-authoritative AGY shadow review(s)", synced)
+            except Exception:
+                logger.exception("AGY shadow review sync failed")
 
             try:
                 if now >= next_context:
