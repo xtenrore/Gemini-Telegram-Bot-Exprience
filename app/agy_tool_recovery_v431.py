@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass
@@ -23,10 +24,12 @@ from app import agy_worker as base
 logger = logging.getLogger("plane_alerts.agy_tool_recovery_v431")
 
 _ORIGINAL_RUN_GOAL = base.GoalSupervisor._run_goal
+_ORIGINAL_STATUS = base.GoalSupervisor.status
 _INSTALLED = False
 _MAX_RECOVERY_TURNS = 4
 _FALLBACK_RETRY_S = 15
 _EXHAUSTED_RETRY_S = 30
+_CONVERSATION_ID_RE = re.compile(r'"conversation_id"\s*:\s*"([^"\\]+)"')
 
 _DENIAL_MARKERS = (
     "permission check failed",
@@ -56,33 +59,40 @@ def output_has_permission_denial(lines: Iterable[str]) -> bool:
 
 
 def _json_payload(line: str) -> dict[str, Any] | None:
-    """Extract one stream-json object from a supervisor-rendered log line."""
+    """Extract one complete stream-json object from a supervisor-rendered line."""
     text = str(line).strip()
     brace = text.find("{")
     if brace < 0:
         return None
     try:
         payload = json.loads(text[brace:])
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
 
 def extract_conversation_id(lines: Iterable[str]) -> str | None:
-    """Recover the most recent Antigravity conversation ID from stream-json."""
+    """Recover the latest conversation ID, including from a truncated JSON line."""
     materialized = list(lines)
     for line in reversed(materialized):
-        payload = _json_payload(str(line))
-        if not payload:
-            continue
-        candidates: list[Any] = [payload.get("conversation_id")]
-        for key in ("result", "step_update", "init"):
-            nested = payload.get(key)
-            if isinstance(nested, dict):
-                candidates.append(nested.get("conversation_id"))
-        for candidate in candidates:
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
+        raw = str(line)
+        payload = _json_payload(raw)
+        if payload:
+            candidates: list[Any] = [payload.get("conversation_id")]
+            for key in ("result", "step_update", "init"):
+                nested = payload.get(key)
+                if isinstance(nested, dict):
+                    candidates.append(nested.get("conversation_id"))
+            for candidate in candidates:
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+
+        # Supervisor log lines are intentionally capped at 4,000 characters.
+        # conversation_id appears near the front of Antigravity stream events,
+        # so recover it even if a very long response truncates the JSON tail.
+        match = _CONVERSATION_ID_RE.search(raw)
+        if match:
+            return match.group(1).strip()
     return None
 
 
@@ -277,10 +287,19 @@ async def _run_goal_with_same_conversation_recovery(self: Any) -> None:
     )
 
 
+def _status_with_tool_recovery(self: Any) -> dict[str, Any]:
+    status = _ORIGINAL_STATUS(self)
+    status["tool_recovery_mode"] = "same_conversation"
+    status["tool_recovery_count"] = int(getattr(self, "_tool_recovery_count_v431", 0) or 0)
+    status["tool_recovery_max_turns"] = _MAX_RECOVERY_TURNS
+    return status
+
+
 def install_tool_recovery_v431() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
     base.GoalSupervisor._run_goal = _run_goal_with_same_conversation_recovery
+    base.GoalSupervisor.status = _status_with_tool_recovery
     _INSTALLED = True
     logger.info("AGY v4.3.1 same-conversation tooling recovery enabled")
