@@ -16,18 +16,26 @@ if "pytest" not in sys.modules:
 
     install_trajectory_hotfix_v43()
 
+    # The v4.4 direct-presence guard runs after the midpoint predictor. It does
+    # not weaken normal confidence thresholds: only two fresh independent ADS-B
+    # positions physically inside the configured radius can promote an
+    # otherwise-uncertain close pass into the existing qualification pipeline.
+    from app.intelligence.direct_presence_guard_v44 import install_direct_presence_guard_v44
+
+    install_direct_presence_guard_v44()
+
     # Install the destination adapters first, then the non-blocking v2 route
-    # resolver, the v4.2 ensemble qualification guard, and finally the v4.3
-    # confirmed-cancellation latch. The latch only prevents predictive jitter
-    # from immediately resurrecting a cancelled encounter; fresh physical entry
-    # into the configured radius remains authoritative.
+    # resolver. Bound v2's background route-history writes before layering the
+    # v4.2 ensemble qualification guard and v4.3 cancellation latch.
     from app.intelligence.route_guard import install_route_guard
     from app.intelligence.route_guard_v2 import install_route_guard_v2
+    from app.intelligence.route_observe_guard_v44 import install_route_observe_guard_v44
     from app.intelligence.route_guard_v42 import install_route_guard_v42
     from app.intelligence.requalification_guard_v43 import install_requalification_guard_v43
 
     install_route_guard()
     install_route_guard_v2()
+    install_route_observe_guard_v44()
     install_route_guard_v42()
     install_requalification_guard_v43()
 
