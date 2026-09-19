@@ -7,8 +7,7 @@ import time
 
 from app import next_hour_shadow as next_hour_base
 from app.agy_prediction_bridge import build_context_snapshot, sync_findings_to_handoff
-from app.next_hour_shadow_v43 import update_next_hour_shadow
-from app.sentinel_shadow import update_sentinel_shadow
+from app.shadow_mongo_batch_v421 import update_next_hour_shadow, update_sentinel_shadow
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("plane_alerts.agy_bridge_daemon")
