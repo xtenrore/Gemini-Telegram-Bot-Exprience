@@ -30,6 +30,8 @@ MIN_WINDOW_HALF_S = 600
 MAX_WINDOW_HALF_S = 1800
 OUTCOME_GRACE_S = 900
 UNRESOLVED_AFTER_S = 2700
+OUTCOME_MATCH_PADDING_S = OUTCOME_GRACE_S
+LEGACY_OUTCOME_VALIDATION_LIMIT = 500
 
 
 def _db():
@@ -55,21 +57,84 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2.0 * r * math.asin(min(1.0, math.sqrt(a)))
 
 
+def _point_timestamp(point: dict[str, Any]) -> float | None:
+    try:
+        ts = float(point.get("t", point.get("timestamp", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return ts if ts > 0 else None
+
+
 def _closest_point(points: list[dict[str, Any]], lat: float, lon: float) -> tuple[float, float] | None:
     best: tuple[float, float] | None = None
     for point in points:
         try:
             plat = float(point.get("lat", point.get("latitude")))
             plon = float(point.get("lon", point.get("longitude")))
-            ts = float(point.get("t", point.get("timestamp", 0.0)) or 0.0)
         except (TypeError, ValueError):
             continue
-        if ts <= 0:
+        ts = _point_timestamp(point)
+        if ts is None:
             continue
         distance = _haversine_km(lat, lon, plat, plon)
         if best is None or distance < best[0]:
             best = (distance, ts)
     return best
+
+
+def _as_utc_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _outcome_match_bounds(expectation: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    """Return the bounded observation interval for one shadow expectation.
+
+    The stored expectation window already captures historical timing variance.
+    We add the existing outcome grace on both sides so moderately early/late
+    passes remain measurable while a different same-day occurrence several
+    hours away can never be selected as the actual CPA.
+    """
+    start = _as_utc_datetime(expectation.get("window_start"))
+    end = _as_utc_datetime(expectation.get("window_end"))
+
+    if start is None or end is None:
+        # Older expectation records may pre-date explicit window fields. Keep
+        # them bounded around predicted CPA rather than falling back to an
+        # unsafe whole-day match.
+        predicted = _as_utc_datetime(expectation.get("predicted_cpa_at"))
+        if predicted is None:
+            return None
+        start = predicted - timedelta(seconds=MAX_WINDOW_HALF_S)
+        end = predicted + timedelta(seconds=MAX_WINDOW_HALF_S)
+
+    if end < start:
+        return None
+    padding = timedelta(seconds=OUTCOME_MATCH_PADDING_S)
+    return start - padding, end + padding
+
+
+def _closest_point_in_expectation_window(
+    points: list[dict[str, Any]],
+    lat: float,
+    lon: float,
+    expectation: dict[str, Any],
+) -> tuple[tuple[float, float] | None, int, tuple[datetime, datetime] | None]:
+    bounds = _outcome_match_bounds(expectation)
+    if bounds is None:
+        return None, 0, None
+    start, end = bounds
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    bounded = [
+        point
+        for point in points
+        if (ts := _point_timestamp(point)) is not None and start_ts <= ts <= end_ts
+    ]
+    return _closest_point(bounded, lat, lon), len(bounded), bounds
 
 
 def _seconds_of_day(ts: float) -> float:
@@ -110,6 +175,104 @@ def _expectation_key(user_id: int, callsign: str, utc_date: str) -> str:
     return f"{int(user_id)}:{callsign}:{utc_date}"
 
 
+def _validate_legacy_outcomes(database, now: datetime) -> int:
+    """Quarantine old outcomes that were matched to the wrong same-day leg.
+
+    Old resolver versions searched every point for the callsign on that UTC
+    date. Preserve the old values for forensics, but remove them from scoring
+    when their selected CPA falls outside the bounded expectation interval.
+    """
+    audit = database["prediction_lab_audit"]
+    cursor = audit.find(
+        {
+            "kind": "next_hour_outcome",
+            "match_validation": {"$exists": False},
+            "actual_cpa_at": {"$ne": None},
+        },
+        {
+            "_id": 1,
+            "expectation_key": 1,
+            "actual_observed": 1,
+            "actual_pass": 1,
+            "actual_closest_km": 1,
+            "actual_cpa_at": 1,
+            "timing_error_s": 1,
+        },
+    ).limit(LEGACY_OUTCOME_VALIDATION_LIMIT)
+
+    quarantined = 0
+    for outcome in cursor:
+        key = str(outcome.get("expectation_key") or "")
+        if not key:
+            continue
+        expectation = audit.find_one(
+            {"kind": "next_hour_expectation", "expectation_key": key},
+            {
+                "_id": 1,
+                "window_start": 1,
+                "window_end": 1,
+                "predicted_cpa_at": 1,
+            },
+        )
+        if not expectation:
+            continue
+        bounds = _outcome_match_bounds(expectation)
+        actual_at = _as_utc_datetime(outcome.get("actual_cpa_at"))
+        if bounds is None or actual_at is None:
+            continue
+        start, end = bounds
+        common = {
+            "match_window_start": start,
+            "match_window_end": end,
+        }
+        if start <= actual_at <= end:
+            audit.update_one(
+                {"_id": outcome["_id"]},
+                {"$set": {**common, "match_validation": "bounded_window_legacy_validated"}},
+            )
+            continue
+
+        audit.update_one(
+            {"_id": outcome["_id"]},
+            {
+                "$set": {
+                    **common,
+                    "match_validation": "quarantined_wrong_occurrence",
+                    "resolution": "unresolved_occurrence_match",
+                    "actual_observed": False,
+                    "actual_pass": None,
+                    "actual_closest_km": None,
+                    "actual_cpa_at": None,
+                    "timing_error_s": None,
+                    "legacy_actual_observed": outcome.get("actual_observed"),
+                    "legacy_actual_pass": outcome.get("actual_pass"),
+                    "legacy_actual_closest_km": outcome.get("actual_closest_km"),
+                    "legacy_actual_cpa_at": actual_at,
+                    "legacy_timing_error_s": outcome.get("timing_error_s"),
+                    "quarantined_at": now,
+                    "note": (
+                        "Previously resolved against a same-day route point outside the bounded expectation window; "
+                        "excluded from accuracy scoring."
+                    ),
+                }
+            },
+        )
+        audit.update_one(
+            {"_id": expectation["_id"]},
+            {
+                "$set": {
+                    "status": "unresolved_occurrence_match",
+                    "resolved_at": now,
+                    "note": (
+                        "Prior outcome used the wrong same-day occurrence and was quarantined before scoring."
+                    ),
+                }
+            },
+        )
+        quarantined += 1
+    return quarantined
+
+
 def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
     """Create due next-hour expectations and resolve matured ones.
 
@@ -117,7 +280,7 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
     """
     database = _db()
     if database is None:
-        return {"created": 0, "resolved": 0, "unresolved": 0}
+        return {"created": 0, "resolved": 0, "unresolved": 0, "quarantined": 0}
 
     now = now or datetime.now(timezone.utc)
     today = now.date().isoformat()
@@ -125,7 +288,7 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
 
     users = list(database["users"].find({"setup_complete": True}, {"user_id": 1, "_id": 0}))
     if not users:
-        return {"created": 0, "resolved": 0, "unresolved": 0}
+        return {"created": 0, "resolved": 0, "unresolved": 0, "quarantined": 0}
     user_ids = [int(doc["user_id"]) for doc in users if doc.get("user_id") is not None]
     locations = {
         int(doc["user_id"]): doc
@@ -221,6 +384,7 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
             if result.upserted_id is not None:
                 created += 1
 
+    quarantined = _validate_legacy_outcomes(database, now)
     resolved = 0
     unresolved = 0
     matured = list(
@@ -243,15 +407,19 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
             {"points": 1, "_id": 0},
         )
         closest = None
+        match_sample_count = 0
+        match_bounds = _outcome_match_bounds(expectation)
         if route and route.get("points"):
             try:
-                closest = _closest_point(
+                closest, match_sample_count, match_bounds = _closest_point_in_expectation_window(
                     list(route.get("points") or []),
                     float(loc["latitude"]),
                     float(loc["longitude"]),
+                    expectation,
                 )
             except (KeyError, TypeError, ValueError):
                 closest = None
+                match_sample_count = 0
 
         key = str(expectation.get("expectation_key"))
         if closest is not None:
@@ -259,12 +427,8 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
             actual_at = datetime.fromtimestamp(actual_ts, timezone.utc)
             radius = float(expectation.get("alert_radius_km") or loc.get("radius_km") or 15.0)
             actual_pass = distance_km <= radius
-            predicted_at = expectation.get("predicted_cpa_at")
-            timing_error_s = None
-            if isinstance(predicted_at, datetime):
-                if predicted_at.tzinfo is None:
-                    predicted_at = predicted_at.replace(tzinfo=timezone.utc)
-                timing_error_s = (actual_at - predicted_at).total_seconds()
+            predicted_at = _as_utc_datetime(expectation.get("predicted_cpa_at"))
+            timing_error_s = (actual_at - predicted_at).total_seconds() if predicted_at is not None else None
             outcome = {
                 "kind": "next_hour_outcome",
                 "expectation_key": key,
@@ -281,6 +445,11 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
                 "prediction_horizon_s": expectation.get("prediction_horizon_s"),
                 "confidence": expectation.get("confidence"),
                 "coverage_mode": "historical_flight_number_timing_shadow",
+                "match_validation": "bounded_window",
+                "match_sample_count": match_sample_count,
+                "match_window_start": match_bounds[0] if match_bounds else None,
+                "match_window_end": match_bounds[1] if match_bounds else None,
+                "resolution": "resolved_bounded_window",
             }
             audit.update_one(
                 {"kind": "next_hour_outcome", "expectation_key": key},
@@ -294,33 +463,34 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
             resolved += 1
             continue
 
-        window_end = expectation.get("window_end")
-        if isinstance(window_end, datetime):
-            if window_end.tzinfo is None:
-                window_end = window_end.replace(tzinfo=timezone.utc)
-            if (now - window_end).total_seconds() >= UNRESOLVED_AFTER_S:
-                audit.update_one(
-                    {"kind": "next_hour_outcome", "expectation_key": key},
-                    {"$set": {
-                        "kind": "next_hour_outcome",
-                        "expectation_key": key,
-                        "captured_at": now,
-                        "expires_at": expires,
-                        "user_id": user_id,
-                        "callsign": callsign,
-                        "utc_date": str(expectation.get("utc_date") or today),
-                        "actual_observed": False,
-                        "actual_pass": None,
-                        "resolution": "unresolved_coverage",
-                        "note": "No route observation available; excluded from accuracy scoring.",
-                        "coverage_mode": "historical_flight_number_timing_shadow",
-                    }},
-                    upsert=True,
-                )
-                audit.update_one(
-                    {"_id": expectation["_id"]},
-                    {"$set": {"status": "unresolved_coverage", "resolved_at": now}},
-                )
-                unresolved += 1
+        window_end = _as_utc_datetime(expectation.get("window_end"))
+        if window_end is not None and (now - window_end).total_seconds() >= UNRESOLVED_AFTER_S:
+            audit.update_one(
+                {"kind": "next_hour_outcome", "expectation_key": key},
+                {"$set": {
+                    "kind": "next_hour_outcome",
+                    "expectation_key": key,
+                    "captured_at": now,
+                    "expires_at": expires,
+                    "user_id": user_id,
+                    "callsign": callsign,
+                    "utc_date": str(expectation.get("utc_date") or today),
+                    "actual_observed": False,
+                    "actual_pass": None,
+                    "resolution": "unresolved_coverage",
+                    "note": "No route observation inside the bounded expectation match window; excluded from accuracy scoring.",
+                    "coverage_mode": "historical_flight_number_timing_shadow",
+                    "match_validation": "bounded_window_no_observation",
+                    "match_sample_count": match_sample_count,
+                    "match_window_start": match_bounds[0] if match_bounds else None,
+                    "match_window_end": match_bounds[1] if match_bounds else None,
+                }},
+                upsert=True,
+            )
+            audit.update_one(
+                {"_id": expectation["_id"]},
+                {"$set": {"status": "unresolved_coverage", "resolved_at": now}},
+            )
+            unresolved += 1
 
-    return {"created": created, "resolved": resolved, "unresolved": unresolved}
+    return {"created": created, "resolved": resolved, "unresolved": unresolved, "quarantined": quarantined}
