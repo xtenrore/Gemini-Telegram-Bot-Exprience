@@ -9,7 +9,11 @@ from app.intelligence.requalification_guard_v43 import (
     _apply_latch,
 )
 from app.intelligence.route_guard_v42 import RouteGateResultV42
-from app.intelligence.trajectory_hotfix_v43 import _midpoint_motion_step
+from app.intelligence.trajectory import HistorySample
+from app.intelligence.trajectory_hotfix_v43 import (
+    _midpoint_motion_step,
+    predict_trajectory_v43,
+)
 from app.next_hour_shadow_v43 import _history_quality_reason
 
 
@@ -101,6 +105,39 @@ def test_midpoint_step_uses_average_speed_and_heading():
     assert midpoint_speed == pytest.approx(101.5)
     assert next_heading == pytest.approx(2.0)
     assert midpoint_heading == pytest.approx(0.5)
+
+
+def test_midpoint_predictor_keeps_fresh_in_radius_presence_authoritative():
+    samples = [
+        HistorySample(
+            timestamp=100.0,
+            latitude=0.035,
+            longitude=0.0,
+            altitude_m=3000.0,
+            speed_kts=260.0,
+            heading_deg=0.0,
+        ),
+        HistorySample(
+            timestamp=110.0,
+            latitude=0.045,
+            longitude=0.0,
+            altitude_m=3000.0,
+            speed_kts=260.0,
+            heading_deg=0.0,
+        ),
+    ]
+    prediction = predict_trajectory_v43(
+        samples,
+        0.0,
+        0.0,
+        9.0,
+        now=110.0,
+    )
+    assert prediction.current_distance_km < 9.0
+    assert prediction.enters_alert_radius
+    assert not prediction.already_passed
+    assert prediction.state == "Passing nearby"
+    assert prediction.radius_entry_s == 0.0
 
 
 def test_next_hour_shadow_rejects_single_day_and_ambiguous_history():
