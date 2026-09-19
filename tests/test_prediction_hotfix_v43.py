@@ -148,6 +148,6 @@ def test_next_hour_shadow_rejects_single_day_and_ambiguous_history():
 
 def test_agy_headless_permissions_cover_observed_safe_audit_commands():
     entrypoint = Path("scripts/agy-worker-entrypoint.sh").read_text()
-    for rule in ("command(python3)", "command(grep)", "command(jq)"):
+    for rule in ("command(python3)", "command(grep)", "command(jq)", "command(ls)"):
         assert rule in entrypoint
     assert "--dangerously-skip-permissions" not in entrypoint

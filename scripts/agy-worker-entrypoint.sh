@@ -84,6 +84,7 @@ required = [
     'command(python3)',
     'command(grep)',
     'command(jq)',
+    'command(ls)',
     'command(regex:python /app/scripts/agy_record_finding.py.*)',
     'command(regex:python3 /app/scripts/agy_record_finding.py.*)',
 ]
