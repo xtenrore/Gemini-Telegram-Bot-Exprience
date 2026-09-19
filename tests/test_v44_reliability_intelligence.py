@@ -196,7 +196,8 @@ def test_visual_setup_uses_telegram_native_theme_and_safe_areas() -> None:
     assert "safe-area-inset-top" in PROFILE_SETUP_HTML
     assert "safe-area-inset-bottom" in PROFILE_SETUP_HTML
     assert "BackButton" in PROFILE_SETUP_HTML
-    assert "Guided Setup" not in PROFILE_SETUP_HTML  # entry mode is Telegram-side, not duplicated inside editor
+    assert "Visual Setup" in PROFILE_SETUP_HTML
+    assert "glassmorphism" not in PROFILE_SETUP_HTML.lower()
 
 
 def test_agy_shadow_contract_has_zero_live_authority() -> None:
