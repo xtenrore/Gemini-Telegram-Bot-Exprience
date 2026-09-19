@@ -62,8 +62,20 @@ def _icao24(doc: dict[str, Any]) -> str:
 
 
 def _adsb_url(doc: dict[str, Any]) -> str | None:
+    """Return a tracker URL for every identifiable forecast row.
+
+    Live rows use the exact ICAO24 target. Historical/shadow rows usually do not
+    have today's ICAO24 yet, so fall back to tar1090's exact callsign filter.
+    That keeps the ADSB button present for every forecast aircraft without
+    making extra provider requests or guessing an airframe identity.
+    """
     icao = _icao24(doc)
-    return f"https://adsb.lol/?icao={icao}" if icao else None
+    if icao:
+        return f"https://adsb.lol/?icao={icao}"
+    callsign = re.sub(r"[^A-Z0-9]", "", _identity(doc))[:24]
+    if callsign:
+        return f"https://adsb.lol/?filterCallSign=%5E{callsign}%24"
+    return None
 
 
 def _aircraft_label(doc: dict[str, Any]) -> str:
