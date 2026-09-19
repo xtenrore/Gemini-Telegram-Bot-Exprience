@@ -22,15 +22,19 @@ def test_permission_denial_detection_matches_tool_error():
     assert output_has_permission_denial(['[OUT] normal successful python3 output']) is False
 
 
-def test_conversation_id_is_recovered_from_result_or_init_events():
+def test_conversation_id_is_recovered_from_result_init_and_truncated_events():
     result_lines = [
         '[OUT] {"event":"result","result":{"conversation_id":"result-conv","status":"SUCCESS"}}'
     ]
     init_lines = [
         '[OUT] {"event":"init","conversation_id":"init-conv","init":{"cwd":"/app"}}'
     ]
+    truncated_lines = [
+        '[OUT] {"event":"result","result":{"conversation_id":"truncated-conv","status":"SUCCESS","response":"' + ('x' * 5000)
+    ]
     assert extract_conversation_id(result_lines) == 'result-conv'
     assert extract_conversation_id(init_lines) == 'init-conv'
+    assert extract_conversation_id(truncated_lines) == 'truncated-conv'
 
 
 def test_tool_recovery_guidance_escalates_without_widening_permissions():
@@ -89,5 +93,7 @@ def test_denied_action_resumes_exact_conversation_instead_of_backing_off():
     assert 'completed_after_tool_recovery' in source
     assert 'tool_recovery_exhausted' in source
     assert '_MAX_RECOVERY_TURNS = 4' in source
+    assert 'tool_recovery_mode' in source
+    assert 'tool_recovery_count' in source
     assert 'permission_retry_delay_s' not in source
     assert '--dangerously-skip-permissions' not in source
