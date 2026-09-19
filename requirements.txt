@@ -1,4 +1,4 @@
-# Plane Alerts v4.4 runtime dependencies
+# Plane Alerts v4.0 runtime dependencies
 
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
@@ -16,4 +16,3 @@ psutil>=5.9.0
 structlog>=24.4.0
 honcho>=1.1.0
 Pillow>=11.0.0
-netCDF4>=1.7.2

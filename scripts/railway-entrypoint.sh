@@ -22,7 +22,4 @@ if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
   fi
 fi
 
-# The Dockerfile uses this script as CMD, so this is the authoritative Railway
-# production entrypoint. Keep it on the v4.4 composition layer rather than the
-# legacy base app, otherwise Telegram-visible v4.4 handlers/routes are skipped.
-exec uvicorn app.main_v44:app --host 0.0.0.0 --port "${PORT:-8000}" --workers 1
+exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" --workers 1

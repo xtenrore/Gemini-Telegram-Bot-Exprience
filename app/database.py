@@ -48,7 +48,7 @@ async def connect_db(max_retries: int = 5, retry_delay: float = 2.0, timeout_ms:
                 maxPoolSize=5,
                 minPoolSize=0,
                 maxIdleTimeMS=60000,
-                appname="plane-alerts-v4.4",
+                appname="plane-alerts-v4.3",
             )
             _db = _client[settings.database_name]
             await _client.admin.command("ping")
@@ -97,8 +97,6 @@ def feedback_col() -> AsyncIOMotorCollection: return get_db()["feedback"]
 def camera_profiles_col() -> AsyncIOMotorCollection: return get_db()["camera_profiles"]
 def system_status_col() -> AsyncIOMotorCollection: return get_db()["system_status"]
 def admin_audit_col() -> AsyncIOMotorCollection: return get_db()["admin_audit"]
-def decision_records_col() -> AsyncIOMotorCollection: return get_db()["decision_records"]
-def agy_shadow_reviews_col() -> AsyncIOMotorCollection: return get_db()["agy_shadow_reviews"]
 
 
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
@@ -114,19 +112,17 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["locations"].create_index("geohash")
     await db["preferences"].create_index("user_id", unique=True)
     # v4.3 alert profiles are user-isolated and addressed by a compact immutable
-    # profile id. Active profile id lives on the existing user document.
+    # profile id.  Active profile id lives on the existing user document.
     await db["profiles"].create_index([("user_id", 1), ("profile_id", 1)], unique=True)
     await db["profiles"].create_index([("user_id", 1), ("created_at", 1)])
     await db["user_state"].create_index("user_id", unique=True)
     await db["notification_history"].create_index([("user_id", 1), ("aircraft_icao24", 1), ("cooldown_until", 1)])
     await db["notification_history"].create_index("cooldown_until", expireAfterSeconds=86400)
-    await db["notification_history"].create_index("decision_record_id")
     await db["provider_learning"].create_index([("user_id", 1), ("geohash", 1)], unique=True)
     await db["provider_learning"].create_index("user_id")
     await db["ai_usage"].create_index([("model_name", 1), ("day", 1)], unique=True)
     await db["feedback"].create_index([("user_id", 1), ("notification_id", 1)])
     await db["feedback"].create_index("user_id")
-    await db["feedback"].create_index("decision_record_id")
     await db["camera_profiles"].create_index("user_id", unique=True)
     await db["photo_alert_snapshots"].create_index([("user_id", 1), ("aircraft_icao24", 1)])
     await db["photo_alert_snapshots"].create_index("expires_at", expireAfterSeconds=0)
@@ -148,20 +144,6 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["prediction_lab_audit"].create_index([("kind", 1), ("status", 1), ("window_end", 1)])
     await db["prediction_lab_audit"].create_index("expires_at", expireAfterSeconds=0)
     await db["prediction_sentinel_routes"].create_index("utc_date")
-
-    # v4.4 forensic data is explicitly bounded. TTL removal is authoritative;
-    # the in-process recorder is additionally queue- and dedup-bounded.
-    await db["decision_records"].create_index("decision_id", unique=True)
-    await db["decision_records"].create_index([("user_id", 1), ("timestamp", -1)])
-    await db["decision_records"].create_index([("evidence.icao24", 1), ("timestamp", -1)])
-    await db["decision_records"].create_index("notification_id")
-    await db["decision_records"].create_index("expires_at", expireAfterSeconds=0)
-    await db["agy_shadow_reviews"].create_index("decision_id", unique=True)
-    await db["agy_shadow_reviews"].create_index("expires_at", expireAfterSeconds=0)
-    await db["agy_findings"].create_index("seq")
-    await db["agy_findings"].create_index("finding_fingerprint", unique=True, sparse=True)
-    await db["agy_findings"].create_index([("subsystem", 1), ("created_at_epoch", -1)])
-
     await db["system_status"].create_index("updated_at")
     await db["admin_audit"].create_index("created_at")
     await db["admin_audit"].create_index("target_user_id")
