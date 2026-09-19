@@ -50,7 +50,7 @@ export AGY_CLI_DISABLE_AUTO_UPDATE=true
 # Seed first-launch choices and the minimum headless permissions on the
 # persistent volume. Do not use the dangerous global bypass: AGY may read the
 # Plane Alerts source and its redacted Prediction Lab context, and may only run
-# the explicitly allowlisted git/test/python commands configured by the worker.
+# the explicitly allowlisted git/test/python/read-only inspection commands.
 python - <<'PY'
 import json, os
 from pathlib import Path
@@ -81,7 +81,11 @@ required = [
     'command(git)',
     'command(pytest)',
     'command(python)',
+    'command(python3)',
+    'command(grep)',
+    'command(jq)',
     'command(regex:python /app/scripts/agy_record_finding.py.*)',
+    'command(regex:python3 /app/scripts/agy_record_finding.py.*)',
 ]
 for rule in required:
     if rule not in allow:
