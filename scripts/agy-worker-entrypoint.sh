@@ -19,6 +19,10 @@ if [[ -z "${AGY_KEYRING_PASSWORD:-}" ]]; then
   exit 78
 fi
 
+# Antigravity account sessions are stored through Linux Secret Service. Start
+# one D-Bus session for the lifetime of this container, then unlock/create the
+# login keyring using a Railway secret. The encrypted keyring files themselves
+# live under the persistent volume via XDG_DATA_HOME.
 eval "$(dbus-launch --sh-syntax)"
 KEYRING_ENV="$(printf '%s' "$AGY_KEYRING_PASSWORD" | gnome-keyring-daemon --unlock --components=secrets 2>/tmp/agy-keyring-error.log || true)"
 if [[ -n "$KEYRING_ENV" ]]; then
@@ -35,12 +39,18 @@ if [[ "$(secret-tool lookup plane-alerts probe 2>/dev/null || true)" != "ok" ]];
   exit 78
 fi
 
+# Never let an inherited API key silently switch this worker onto billable API
+# usage. Account-based Google AI Pro authentication is the only allowed path.
 unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL || true
 
 export PATH="/usr/local/bin:$PATH"
 export PYTHONPATH="/app${PYTHONPATH:+:$PYTHONPATH}"
 export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
+# Seed first-launch choices and the minimum headless permissions on the
+# persistent volume. Do not use the dangerous global bypass: AGY may read the
+# Plane Alerts source and its redacted Prediction Lab context, and may only run
+# the explicitly allowlisted git/test/python/read-only inspection commands.
 python - <<'PY'
 import json, os
 from pathlib import Path
@@ -63,6 +73,8 @@ if '/app' not in trusted:
     trusted.append('/app')
 data['trustedWorkspaces'] = trusted
 permissions = data.setdefault('permissions', {})
+# jq is not installed in the AGY image. Remove the stale permission so the
+# model is not encouraged to choose a command that can never succeed.
 allow = [rule for rule in list(permissions.get('allow') or []) if rule != 'command(jq)']
 required = [
     'read_file(/app)',
@@ -113,12 +125,16 @@ if enable:
         'workaround; continue using only the supported built-in tools and single allowlisted commands.'
     )
     if goal:
+        # Replace any persisted older tooling block on every restart so the
+        # supervisor cannot keep stale command guidance from a previous image.
         marker = '\n\n[HEADLESS_TOOLING_RULES]'
         if marker in goal:
             goal = goal.split(marker, 1)[0].rstrip()
         goal = f'{goal}\n\n{tooling_rules}'
         supervisor['goal'] = goal
 
+    # A tooling-policy change must run once immediately even when the previous
+    # denied CLI cycle incorrectly persisted a normal hourly completion time.
     tooling_policy_version = 3
     if int(supervisor.get('tooling_policy_version', 0) or 0) != tooling_policy_version:
         supervisor['tooling_policy_version'] = tooling_policy_version
@@ -126,6 +142,8 @@ if enable:
 
     if not was_enabled:
         supervisor['next_run_at'] = 0
+    # Changing this token deliberately forces one immediate run. Persisting the
+    # consumed token means ordinary restarts never reset a quota-wait deadline.
     force_token = os.environ.get('AGY_FORCE_RUN_TOKEN', '').strip()
     if force_token and supervisor.get('last_force_run_token') != force_token:
         supervisor['last_force_run_token'] = force_token
@@ -135,6 +153,8 @@ if enable:
     stmp.replace(supervisor_path)
 PY
 
+# Parent-side bridge keeps Mongo credentials. AGY itself never receives them.
+# It refreshes redacted truth every 30s and publishes findings every 3s.
 python /app/scripts/agy_bridge_daemon.py &
 BRIDGE_PID=$!
 echo "Prediction Lab bridge started pid=$BRIDGE_PID"
