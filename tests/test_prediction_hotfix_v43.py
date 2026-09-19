@@ -1,13 +1,16 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from app.intelligence.direct_presence_guard_v44 import _confirmed_fresh_direct_presence
 from app.intelligence.lifecycle import should_cancel_active_alert
 from app.intelligence.requalification_guard_v43 import (
     CancellationLatch,
     _apply_latch,
 )
+from app.intelligence import route_observe_guard_v44
 from app.intelligence.route_guard_v42 import RouteGateResultV42
 from app.intelligence.trajectory import HistorySample
 from app.intelligence.trajectory_hotfix_v43 import (
@@ -140,14 +143,108 @@ def test_midpoint_predictor_keeps_fresh_in_radius_presence_authoritative():
     assert prediction.radius_entry_s == 0.0
 
 
+def test_direct_presence_requires_two_fresh_independent_positions_and_approach():
+    samples = [
+        HistorySample(timestamp=90.0, latitude=0.085, longitude=0.0, position_age_s=0.0),
+        HistorySample(timestamp=100.0, latitude=0.070, longitude=0.0, position_age_s=0.0),
+    ]
+    uncertain = SimpleNamespace(time_to_cpa_s=None, projected_closest_km=7.8)
+    assert _confirmed_fresh_direct_presence(
+        samples,
+        user_lat=0.0,
+        user_lon=0.0,
+        alert_radius_km=9.0,
+        now=100.0,
+        prediction=uncertain,
+    )
+
+
+def test_direct_presence_rejects_single_stale_duplicate_or_moving_away_evidence():
+    uncertain = SimpleNamespace(time_to_cpa_s=None, projected_closest_km=3.0)
+    single = [HistorySample(timestamp=100.0, latitude=0.070, longitude=0.0)]
+    assert not _confirmed_fresh_direct_presence(
+        single,
+        user_lat=0.0,
+        user_lon=0.0,
+        alert_radius_km=9.0,
+        now=100.0,
+        prediction=uncertain,
+    )
+
+    stale = [
+        HistorySample(timestamp=70.0, latitude=0.085, longitude=0.0, position_age_s=30.0),
+        HistorySample(timestamp=75.0, latitude=0.070, longitude=0.0, position_age_s=25.0),
+    ]
+    assert not _confirmed_fresh_direct_presence(
+        stale,
+        user_lat=0.0,
+        user_lon=0.0,
+        alert_radius_km=9.0,
+        now=100.0,
+        prediction=uncertain,
+    )
+
+    duplicate = [
+        HistorySample(timestamp=95.0, latitude=0.070, longitude=0.0),
+        HistorySample(timestamp=100.0, latitude=0.070, longitude=0.0),
+    ]
+    assert not _confirmed_fresh_direct_presence(
+        duplicate,
+        user_lat=0.0,
+        user_lon=0.0,
+        alert_radius_km=9.0,
+        now=100.0,
+        prediction=uncertain,
+    )
+
+    moving_away = [
+        HistorySample(timestamp=95.0, latitude=0.050, longitude=0.0),
+        HistorySample(timestamp=100.0, latitude=0.070, longitude=0.0),
+    ]
+    assert not _confirmed_fresh_direct_presence(
+        moving_away,
+        user_lat=0.0,
+        user_lon=0.0,
+        alert_radius_km=9.0,
+        now=100.0,
+        prediction=uncertain,
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_history_background_write_is_bounded(monkeypatch):
+    async def slow_observe(_self, _ac, *, now=None):
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(route_observe_guard_v44, "_BASE_OBSERVE", slow_observe)
+    monkeypatch.setattr(route_observe_guard_v44, "_OBSERVE_TIMEOUT_S", 0.005)
+    await asyncio.wait_for(
+        route_observe_guard_v44._bounded_original_observe(
+            SimpleNamespace(),
+            SimpleNamespace(callsign="THY1017"),
+            now=100.0,
+        ),
+        timeout=0.1,
+    )
+
+
 def test_next_hour_shadow_rejects_single_day_and_ambiguous_history():
     assert _history_quality_reason(1, 0.0) == "insufficient_history_days"
     assert _history_quality_reason(2, 1900.0) == "ambiguous_or_multimodal_time_history"
     assert _history_quality_reason(2, 900.0) == ""
 
 
-def test_agy_headless_permissions_cover_observed_safe_audit_commands():
+def test_agy_headless_permissions_cover_supported_audit_commands_without_shell_bypass():
     entrypoint = Path("scripts/agy-worker-entrypoint.sh").read_text()
-    for rule in ("command(python3)", "command(grep)", "command(jq)", "command(ls)"):
+    for rule in ("command(python3)", "command(grep)", "command(ls)"):
         assert rule in entrypoint
+    assert "command(jq)" not in entrypoint
+    assert "[HEADLESS_TOOLING_RULES]" in entrypoint
+    assert "Do not use jq, sed, cat/heredocs" in entrypoint
     assert "--dangerously-skip-permissions" not in entrypoint
+
+
+def test_worker_installs_direct_presence_and_bounded_route_writes_before_monitor_imports():
+    worker_init = Path("app/worker/__init__.py").read_text()
+    assert "install_direct_presence_guard_v44()" in worker_init
+    assert "install_route_observe_guard_v44()" in worker_init
