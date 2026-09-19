@@ -22,7 +22,7 @@ from app.alert_profiles import (
     profile_summary,
     save_profile,
 )
-from app.bot.profile_handlers import _button, _clear_state, _set_state
+from app.bot.profile_handlers import _button, _clear_state, _render_profiles, _set_state
 from app.database import users_col, user_state_col
 from app.worker.geo import compute_geohash
 
@@ -115,6 +115,7 @@ async def cmd_status_profiled(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"{_esc(profile_summary(active))}\n\n"
         "Monitoring active.",
         parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[_button("Manage Profiles", "pf:home")]]),
     )
     raise ApplicationHandlerStop
 
@@ -162,6 +163,31 @@ async def accept_terms_profiled(update: Update, context: ContextTypes.DEFAULT_TY
     raise ApplicationHandlerStop
 
 
+async def stale_profile_callback_guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Expire nested profile menus whose persisted edit draft no longer exists."""
+    del context
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not query.data or not user:
+        return
+
+    parts = query.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    # Profile-list actions are self-contained and remain valid after restarts.
+    # Nested selection/rule callbacks require a persisted profile_draft.
+    if action in {"home", "new", "o", "a", "e", "r", "d", "x", "xd"}:
+        return
+
+    _current, temp = await _state(user.id)
+    if isinstance(temp.get("profile_draft"), dict):
+        return
+
+    await query.answer("This profile menu has expired.", show_alert=True)
+    await _clear_state(user.id)
+    await _render_profiles(update, user.id)
+    raise ApplicationHandlerStop
+
+
 async def quick_location_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     user = update.effective_user
@@ -195,4 +221,5 @@ def register_profile_legacy_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("status", cmd_status_profiled), group=group)
     app.add_handler(CommandHandler("help", cmd_help_profiled), group=group)
     app.add_handler(CallbackQueryHandler(accept_terms_profiled, pattern=r"^terms:accept$"), group=group)
+    app.add_handler(CallbackQueryHandler(stale_profile_callback_guard, pattern=r"^pf:"), group=group)
     app.add_handler(MessageHandler(filters.LOCATION, quick_location_message), group=group)
