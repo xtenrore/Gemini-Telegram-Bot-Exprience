@@ -20,7 +20,8 @@ The release focuses on failures found from real production telemetry and automat
 - slow route-history writes are time-bounded and may be dropped because route-history telemetry must never block live alert processing;
 - Prediction Lab Next60 and Europe-sentinel Mongo reads use small cursor batches so large point-heavy route histories do not create oversized database responses;
 - failed shadow scans return to their normal cadence instead of immediately retrying and increasing database pressure;
-- AGY headless audits use a documented set of supported tools and Python standard-library analysis instead of assuming optional packages are installed.
+- AGY headless audits use a documented set of supported tools and Python standard-library analysis instead of assuming optional packages are installed;
+- production CI deploys the same tested Git commit to both the main Railway service and the AGY worker, so the two services do not drift between releases.
 
 The alert-critical rules remain deterministic. This release does not move trajectory, CPA, ETA, pass/no-pass, qualification, cancellation, or notification timing to an AI model.
 
@@ -170,6 +171,8 @@ AGY service:
 - durable state on a persistent Railway volume;
 - no paid-credit overage path;
 - deterministic shadow audit helpers.
+
+After main-branch CI succeeds, the deployment workflow uploads that exact tested commit to both Railway services. This keeps AGY on the same verified source as the production predictor without replacing its persistent authentication volume.
 
 ## Running locally
 

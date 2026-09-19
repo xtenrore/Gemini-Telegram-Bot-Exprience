@@ -1,4 +1,4 @@
-name: Deploy Plane to Railway
+name: Deploy Plane Alerts to Railway
 
 on:
   workflow_run:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: plane-railway-production
+  group: plane-alerts-railway-production
   cancel-in-progress: true
 
 jobs:
@@ -21,13 +21,14 @@ jobs:
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     container: ghcr.io/railwayapp/cli:latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
       PROJECT_ID: 167a00b7-c56c-4cbb-9f24-3daded12443c
       ENVIRONMENT_ID: 092b0d8c-cfd9-44d4-9f25-64795ea634d6
-      SERVICE_ID: af7f738d-0a49-4b86-a96a-86cf22f1b4db
+      MAIN_SERVICE_ID: af7f738d-0a49-4b86-a96a-86cf22f1b4db
+      AGY_SERVICE_ID: 44cdabdc-7c03-4960-b55a-276810841a2b
       WORKSPACE_ID: 3fcd544c-7798-4d82-b331-8ea8294ad9e5
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
@@ -61,13 +62,24 @@ jobs:
           echo "RAILWAY_TOKEN=$RAILWAY_API_TOKEN" >> "$GITHUB_ENV"
           echo "RAILWAY_API_TOKEN=" >> "$GITHUB_ENV"
 
-      - name: Deploy exact tested commit
+      - name: Deploy tested commit to main service
         shell: sh
         run: |
           set -eu
           railway up \
             --project "$PROJECT_ID" \
-            --service "$SERVICE_ID" \
+            --service "$MAIN_SERVICE_ID" \
             --environment "$ENVIRONMENT_ID" \
             --ci \
-            --message "Plane Alerts v4.2 ${DEPLOY_SHA}"
+            --message "Plane Alerts v4.2.1 main ${DEPLOY_SHA}"
+
+      - name: Deploy tested commit to AGY service
+        shell: sh
+        run: |
+          set -eu
+          railway up \
+            --project "$PROJECT_ID" \
+            --service "$AGY_SERVICE_ID" \
+            --environment "$ENVIRONMENT_ID" \
+            --ci \
+            --message "Plane Alerts v4.2.1 AGY ${DEPLOY_SHA}"
