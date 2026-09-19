@@ -2,7 +2,7 @@
 set -eu
 
 # Railway should never start a seemingly healthy bot with empty core production
-# credentials. Gemini is deliberately optional in Plane? v3.4: deterministic
+# credentials. Gemini is deliberately optional in Plane Alerts: deterministic
 # trajectory, alert, camera and environment intelligence must continue without AI.
 if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
   missing=""
@@ -18,8 +18,11 @@ if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
   if [ -n "${GEMINI_API_KEY:-}" ]; then
     echo "Railway runtime configuration check passed: Telegram and MongoDB are configured; optional Gemini advisor is enabled."
   else
-    echo "Railway runtime configuration check passed: Telegram and MongoDB are configured; Gemini advisor is disabled and deterministic v3.4 fallback remains active."
+    echo "Railway runtime configuration check passed: Telegram and MongoDB are configured; Gemini advisor is disabled and deterministic fallback remains active."
   fi
 fi
 
-exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" --workers 1
+# The Dockerfile uses this script as CMD, so this is the authoritative Railway
+# production entrypoint. Keep it on the v4.4 composition layer rather than the
+# legacy base app, otherwise Telegram-visible v4.4 handlers/routes are skipped.
+exec uvicorn app.main_v44:app --host 0.0.0.0 --port "${PORT:-8000}" --workers 1
