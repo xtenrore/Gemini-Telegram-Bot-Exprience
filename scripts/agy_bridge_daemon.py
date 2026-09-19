@@ -6,7 +6,7 @@ import logging
 import time
 
 from app.agy_prediction_bridge import build_context_snapshot, sync_findings_to_handoff
-from app.next_hour_shadow import update_next_hour_shadow
+from app.next_hour_shadow_v43 import update_next_hour_shadow
 from app.sentinel_shadow import update_sentinel_shadow
 
 logging.basicConfig(level=logging.INFO)
@@ -30,10 +30,11 @@ def main() -> int:
                 counters = update_next_hour_shadow()
                 next_hour_audit = now + NEXT_HOUR_INTERVAL_S
                 logger.info(
-                    "NEXT_HOUR_SHADOW created=%d resolved=%d unresolved=%d",
+                    "NEXT_HOUR_SHADOW created=%d resolved=%d unresolved=%d rejected=%d",
                     counters.get("created", 0),
                     counters.get("resolved", 0),
                     counters.get("unresolved", 0),
+                    counters.get("rejected", 0),
                 )
         except Exception:
             logger.exception("Next-hour shadow audit failed")
