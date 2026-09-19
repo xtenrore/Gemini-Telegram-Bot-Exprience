@@ -2,7 +2,7 @@
 
 The existing /console/input endpoint is line-oriented and always appends a
 newline, which makes arrow-key navigation impossible because ESC[A would be
-followed by Enter.  This endpoint writes a tightly allowlisted key sequence
+followed by Enter. This endpoint writes a tightly allowlisted key sequence
 straight to the already-running PTY and nothing else.
 """
 from __future__ import annotations
@@ -14,6 +14,11 @@ from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 
 from app.agy_worker import _auth, app, console
+from app.agy_permission_guard_v422 import install_permission_guard_v422
+
+# Install before FastAPI startup creates/runs the supervisor task. This keeps
+# strict headless permissions while making denied tool actions retryable.
+install_permission_guard_v422()
 
 
 class KeyInput(BaseModel):

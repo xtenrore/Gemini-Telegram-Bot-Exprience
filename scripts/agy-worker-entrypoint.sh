@@ -112,13 +112,16 @@ if enable:
     goal = configured_goal or str(supervisor.get('goal') or '').strip()
     tooling_rules = (
         '[HEADLESS_TOOLING_RULES] In headless audits, prefer view_file, list_dir, grep_search, and write_to_file. '
-        'For run_command, use one supported command beginning with python3, python, grep, ls, git, pytest, or '
-        '/app/scripts/agy_record_finding.py. Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, or other '
-        'compound shell syntax. The AGY image is intentionally minimal: use the Python standard library only unless '
-        'a package import has already been proven to work. Do not assume numpy, pandas, scipy, or other optional '
-        'packages exist, and do not pip-install packages at runtime. If an optional import fails, immediately rewrite '
-        'the analysis with the standard library. If a command is denied, do not retry it through an equivalent shell '
-        'workaround; continue with the supported built-in tools instead.'
+        'For run_command, use exactly one supported command beginning with python3, python, grep, ls, git, pytest, '
+        'or /app/scripts/agy_record_finding.py. NEVER use run_command to create or modify a file. For any multi-line '
+        'analysis script, call write_to_file first, then make a separate run_command call containing only '
+        '`python3 /path/to/script.py`. Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, sh, bash, or '
+        'other compound shell syntax. The AGY image is intentionally minimal: use the Python standard library only '
+        'unless a package import has already been proven to work. Do not assume numpy, pandas, scipy, or other '
+        'optional packages exist, and do not pip-install packages at runtime. If an optional import fails, immediately '
+        'rewrite the analysis with the standard library. A permission denial is NOT task completion. Never retry a '
+        'denied operation through an equivalent shell workaround; on the next goal cycle continue using only the '
+        'supported built-in tools and single allowlisted commands.'
     )
     if goal:
         # Replace any persisted older tooling block on every restart so the
@@ -128,6 +131,14 @@ if enable:
             goal = goal.split(marker, 1)[0].rstrip()
         goal = f'{goal}\n\n{tooling_rules}'
         supervisor['goal'] = goal
+
+    # A tooling-policy change must run once immediately even when the previous
+    # denied CLI cycle incorrectly persisted a normal hourly completion time.
+    tooling_policy_version = 2
+    if int(supervisor.get('tooling_policy_version', 0) or 0) != tooling_policy_version:
+        supervisor['tooling_policy_version'] = tooling_policy_version
+        supervisor['next_run_at'] = 0
+
     if not was_enabled:
         supervisor['next_run_at'] = 0
     # Changing this token deliberately forces one immediate run. Persisting the

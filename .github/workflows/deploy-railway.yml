@@ -71,7 +71,7 @@ jobs:
             --service "$MAIN_SERVICE_ID" \
             --environment "$ENVIRONMENT_ID" \
             --ci \
-            --message "Plane Alerts v4.2.1 main ${DEPLOY_SHA}"
+            --message "Plane Alerts v4.2.2 main ${DEPLOY_SHA}"
 
       - name: Deploy tested commit to AGY service
         shell: sh
@@ -82,4 +82,4 @@ jobs:
             --service "$AGY_SERVICE_ID" \
             --environment "$ENVIRONMENT_ID" \
             --ci \
-            --message "Plane Alerts v4.2.1 AGY ${DEPLOY_SHA}"
+            --message "Plane Alerts v4.2.2 AGY ${DEPLOY_SHA}"
