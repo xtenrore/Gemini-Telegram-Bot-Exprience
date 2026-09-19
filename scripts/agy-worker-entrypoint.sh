@@ -115,7 +115,7 @@ if enable:
         'For run_command, use exactly one supported command beginning with python3, python, grep, ls, git, pytest, '
         'or /app/scripts/agy_record_finding.py. NEVER use run_command to create or modify a file. For any multi-line '
         'analysis script, call write_to_file first, then make a separate run_command call containing only '
-        '`python3 /path/to/script.py`. Do not use jq, sed, cat, heredocs, shell redirection, pipes, &&, sh, bash, or '
+        '`python3 /path/to/script.py`. Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, sh, bash, or '
         'other compound shell syntax. The AGY image is intentionally minimal: use the Python standard library only '
         'unless a package import has already been proven to work. Do not assume numpy, pandas, scipy, or other '
         'optional packages exist, and do not pip-install packages at runtime. If an optional import fails, immediately '
