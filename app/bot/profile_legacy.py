@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import html
+import re
 
 from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -16,13 +17,22 @@ from telegram.ext import (
     filters,
 )
 
+from app.aircraft.registry import get_aircraft_type, search_aircraft
 from app.alert_profiles import (
     blank_config_from,
     ensure_default_profile,
     profile_summary,
     save_profile,
 )
-from app.bot.profile_handlers import _button, _clear_state, _render_profiles, _set_state
+from app.bot.profile_handlers import (
+    _button,
+    _clear_state,
+    _draft_selection,
+    _render_aircraft_menu,
+    _render_profiles,
+    _render_rule,
+    _set_state,
+)
 from app.database import users_col, user_state_col
 from app.worker.geo import compute_geohash
 
@@ -188,6 +198,48 @@ async def stale_profile_callback_guard(update: Update, context: ContextTypes.DEF
     raise ApplicationHandlerStop
 
 
+async def unknown_aircraft_search_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Let valid ICAO type codes work even before local metadata catches up."""
+    del context
+    user = update.effective_user
+    message = update.message
+    if not user or not message or message.text is None:
+        return
+    state, temp = await _state(user.id)
+    if state != "profile:search":
+        return
+
+    raw = message.text.strip()
+    # Known catalogue terms still use the richer normal search/results UI.
+    if search_aircraft(raw, limit=1):
+        return
+    code = raw.upper()
+    if get_aircraft_type(code) is not None or not re.fullmatch(r"(?=.*[A-Z])[A-Z0-9]{2,4}", code):
+        return
+
+    purpose = str(temp.get("profile_search_purpose") or "select")
+    _draft, prefs, selection = _draft_selection(temp)
+    selected = set(selection["selected_types"])
+    excluded = set(selection["excluded_types"])
+    selected.add(code)
+    excluded.discard(code)
+    selection["selected_types"] = sorted(selected)
+    selection["excluded_types"] = sorted(excluded)
+    prefs["aircraft_filter"] = selection
+    await _set_state(user.id, "profile:aircraft", temp)
+
+    if purpose == "rule":
+        await _render_rule(update, user.id, "aircraft", code)
+    else:
+        await message.reply_text(
+            f"Added <b>{_esc(code)}</b> as a custom ICAO aircraft type. "
+            "It will be treated as Other until catalogue metadata identifies its category.",
+            parse_mode=ParseMode.HTML,
+        )
+        await _render_aircraft_menu(update, user.id)
+    raise ApplicationHandlerStop
+
+
 async def quick_location_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     user = update.effective_user
@@ -223,3 +275,4 @@ def register_profile_legacy_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(accept_terms_profiled, pattern=r"^terms:accept$"), group=group)
     app.add_handler(CallbackQueryHandler(stale_profile_callback_guard, pattern=r"^pf:"), group=group)
     app.add_handler(MessageHandler(filters.LOCATION, quick_location_message), group=group)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_aircraft_search_fallback), group=group)
