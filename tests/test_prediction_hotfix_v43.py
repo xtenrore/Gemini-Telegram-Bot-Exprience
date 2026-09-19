@@ -228,6 +228,55 @@ async def test_route_history_background_write_is_bounded(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_route_history_queue_uses_fixed_workers_and_dedupes(monkeypatch):
+    calls = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_observe(_self, ac, *, now=None):
+        calls.append((ac.callsign, now))
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(route_observe_guard_v44, "_BASE_OBSERVE", held_observe)
+    monkeypatch.setattr(route_observe_guard_v44, "_OBSERVE_TIMEOUT_S", 1.0)
+    service = SimpleNamespace(_last_sample={})
+    aircraft = SimpleNamespace(
+        callsign="THY1017",
+        latitude=41.0,
+        longitude=29.0,
+        altitude=3000.0,
+        heading=180.0,
+    )
+
+    await route_observe_guard_v44.observe_queued(service, aircraft, now=100.0)
+    await asyncio.wait_for(started.wait(), timeout=0.1)
+    await route_observe_guard_v44.observe_queued(service, aircraft, now=100.0)
+
+    assert len(service._route_guard_v44_observe_workers) == route_observe_guard_v44._OBSERVE_WORKERS
+    assert service._route_guard_v44_observe_queue.maxsize == route_observe_guard_v44._OBSERVE_QUEUE_LIMIT
+    assert len(calls) == 1
+    assert "THY1017" in service._route_guard_v44_observe_keys
+
+    release.set()
+    await asyncio.wait_for(service._route_guard_v44_observe_queue.join(), timeout=0.2)
+    assert calls == [("THY1017", 100.0)]
+    assert not service._route_guard_v44_observe_keys
+
+    workers = service._route_guard_v44_observe_workers
+    for worker in workers:
+        worker.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
+
+
+def test_route_history_guard_replaces_v2_task_fanout_with_queue():
+    source = Path("app/intelligence/route_observe_guard_v44.py").read_text()
+    assert "RouteHistoryService.observe = observe_queued" in source
+    assert "asyncio.Queue(maxsize=_OBSERVE_QUEUE_LIMIT)" in source
+    assert "_OBSERVE_WORKERS = 6" in source
+
+
 def test_next_hour_shadow_rejects_single_day_and_ambiguous_history():
     assert _history_quality_reason(1, 0.0) == "insufficient_history_days"
     assert _history_quality_reason(2, 1900.0) == "ambiguous_or_multimodal_time_history"
