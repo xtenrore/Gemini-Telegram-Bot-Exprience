@@ -2,7 +2,7 @@
 set -eu
 
 # Railway should never start a seemingly healthy bot with empty core production
-# credentials. Gemini is deliberately optional in Plane Alerts: deterministic
+# credentials. Gemini is deliberately optional in Plane? v3.4: deterministic
 # trajectory, alert, camera and environment intelligence must continue without AI.
 if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
   missing=""
@@ -18,7 +18,7 @@ if [ -n "${RAILWAY_ENVIRONMENT:-}" ]; then
   if [ -n "${GEMINI_API_KEY:-}" ]; then
     echo "Railway runtime configuration check passed: Telegram and MongoDB are configured; optional Gemini advisor is enabled."
   else
-    echo "Railway runtime configuration check passed: Telegram and MongoDB are configured; Gemini advisor is disabled and deterministic fallback remains active."
+    echo "Railway runtime configuration check passed: Telegram and MongoDB are configured; Gemini advisor is disabled and deterministic v3.4 fallback remains active."
   fi
 fi
 
