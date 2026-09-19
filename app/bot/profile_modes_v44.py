@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit, urlunsplit
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes
@@ -15,18 +16,45 @@ from app.alert_profiles import (
     profile_summary,
 )
 from app.bot import profile_handlers as guided
+from app.bot.keyboards import CB_ACCEPT_TERMS, skip_location_keyboard
+from app.bot.messages import LOCATION_PROMPT
+from app.bot.states import UserState, set_user_state
 from app.config import settings
+from app.database import users_col
 
 logger = logging.getLogger(__name__)
 
 
-def _visual_url(profile_id: str = "", *, new_profile: bool = False) -> str:
-    base = settings.webhook_url.strip().rstrip("/")
+def _public_base_url() -> str:
+    """Return only the public HTTPS origin, never the Telegram webhook path."""
+    raw = settings.webhook_url.strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        return ""
+    return urlunsplit(("https", parsed.netloc, "", "", "")).rstrip("/")
+
+
+def _visual_url(
+    profile_id: str = "",
+    *,
+    new_profile: bool = False,
+    onboarding: bool = False,
+) -> str:
+    base = _public_base_url()
     if not base:
         return ""
     if new_profile:
-        return f"{base}/profile-setup-ui/new"
-    return f"{base}/profile-setup-ui/profile/{profile_id}"
+        url = f"{base}/profile-setup-ui/new"
+    else:
+        url = f"{base}/profile-setup-ui/profile/{profile_id}"
+    if onboarding:
+        url += "?onboarding=1"
+    return url
 
 
 async def _render_profiles_v44(update: Update, user_id: int) -> None:
@@ -74,6 +102,44 @@ async def _show_mode(update: Update, profile_id: str, *, new_profile: bool = Fal
         "Visual Setup opens the graphical editor. Both edit the same profile settings."
     )
     await guided._show(update, text, InlineKeyboardMarkup(rows))
+
+
+async def _show_onboarding_mode(update: Update, user_id: int) -> None:
+    """Offer Guided or Visual Setup during the first /start flow."""
+    active = await ensure_default_profile(user_id)
+    profile_id = str(active.get("profile_id") or "")
+    visual_url = _visual_url(profile_id, onboarding=True)
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("Guided Setup", callback_data="pf44:onboard_guided")],
+    ]
+    if visual_url:
+        rows.append([InlineKeyboardButton("Visual Setup", web_app=WebAppInfo(url=visual_url))])
+    else:
+        rows.append([InlineKeyboardButton("Visual Setup", callback_data="pf44:visual_unavailable")])
+    await guided._show(
+        update,
+        "<b>Choose how to set up your alerts</b>\n\n"
+        "Guided Setup walks through the settings in Telegram.\n"
+        "Visual Setup opens the graphical editor. Both configure the same Default profile.",
+        InlineKeyboardMarkup(rows),
+    )
+
+
+async def intercept_accept_terms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Upgrade first-time /start onboarding to the v4.4 Guided/Visual chooser."""
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        return
+    await query.answer()
+    await users_col().update_one(
+        {"user_id": user.id},
+        {"$set": {"terms_accepted": True}},
+        upsert=True,
+    )
+    await guided._clear_state(user.id)
+    await _show_onboarding_mode(update, user.id)
+    raise ApplicationHandlerStop
 
 
 async def cmd_profiles_v44(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -143,6 +209,14 @@ async def profile_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer()
         profile_id = data.split(":", 2)[2]
         await guided._start_edit(update, user.id, profile_id)
+    elif data == "pf44:onboard_guided":
+        await query.answer()
+        await set_user_state(user.id, UserState.WAITING_LOCATION)
+        await guided._show(
+            update,
+            "<b>Guided Setup</b>\n\n" + LOCATION_PROMPT,
+            skip_location_keyboard(),
+        )
     elif data == "pf44:visual_unavailable":
         await query.answer()
         await guided._show(
@@ -168,6 +242,7 @@ async def cmd_preferences_v44(update: Update, context: ContextTypes.DEFAULT_TYPE
 def register_profile_mode_handlers_v44(app: Application) -> None:
     """Install all visible v4.4 profile entry points before the v4.3 router."""
     group = -31
+    app.add_handler(CallbackQueryHandler(intercept_accept_terms, pattern=rf"^{CB_ACCEPT_TERMS}$"), group=group)
     app.add_handler(CommandHandler("profiles", cmd_profiles_v44), group=group)
     app.add_handler(CommandHandler("preferences", cmd_preferences_v44), group=group)
     app.add_handler(CallbackQueryHandler(intercept_profile_callback, pattern=r"^pf:(?:new|e:)"), group=group)

@@ -14,6 +14,10 @@ from app.bot.profile_modes_v44 import register_profile_mode_handlers_v44
 from app.profile_guided_sync_v44 import install_profile_guided_sync_v44
 from app.profile_miniapp import router as profile_miniapp_router
 from app.profile_miniapp_entry import router as profile_miniapp_entry_router
+from app.profile_miniapp_v44_patch import (
+    install_profile_miniapp_html_patch,
+    install_profile_save_onboarding_upgrade,
+)
 
 # Register v4.4 entry handlers immediately before the existing profile router.
 _original_profile_register = base.register_profile_handlers
@@ -50,6 +54,8 @@ app.version = "4.4.0"
 # authorized independently with Telegram initData and profile ownership checks.
 app.include_router(profile_miniapp_router, tags=["profile-setup-v4.4"])
 app.include_router(profile_miniapp_entry_router, tags=["profile-setup-v4.4"])
+install_profile_miniapp_html_patch()
+install_profile_save_onboarding_upgrade(app)
 
 
 def _upgrade_route(path: str, transform: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
