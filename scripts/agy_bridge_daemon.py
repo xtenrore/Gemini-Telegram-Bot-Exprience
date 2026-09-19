@@ -8,7 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 from app import next_hour_shadow as next_hour_base
 from app.agy_prediction_bridge import sync_findings_to_handoff
-from app.agy_supervisor_bridge_v44 import build_supervisor_context_snapshot, sync_shadow_reviews
+from app.agy_supervisor_bridge_v44 import build_supervisor_context_snapshot as build_context_snapshot, sync_shadow_reviews
 from app.shadow_mongo_batch_v421 import update_next_hour_shadow, update_sentinel_shadow
 
 logging.basicConfig(level=logging.INFO)
@@ -110,7 +110,7 @@ def main() -> int:
 
             try:
                 if now >= next_context:
-                    build_supervisor_context_snapshot()
+                    build_context_snapshot()
                     next_context = now + CONTEXT_INTERVAL_S
             except Exception:
                 logger.exception("Plane Alerts supervisor context refresh failed")
