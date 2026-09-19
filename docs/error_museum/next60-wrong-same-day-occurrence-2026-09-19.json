@@ -1,0 +1,40 @@
+{
+  "case_id": "next60-wrong-same-day-occurrence-2026-09-19",
+  "captured_at": "2026-09-19T14:00:00Z",
+  "system": "Prediction Lab Next60 shadow outcome resolver",
+  "classification": "shadow_audit_scoring_error",
+  "production_alert_impact": false,
+  "summary": "The Next60 shadow resolver searched every route point for a flight number across the entire UTC day, allowing a different same-day occurrence to be selected as the actual CPA for a forecast several hours later.",
+  "evidence": [
+    {
+      "callsign": "QNT576",
+      "predicted_cpa_approx": "20:27Z",
+      "matched_actual_cpa_approx": "13:06Z",
+      "timing_error_seconds_approx": -26475,
+      "problem": "same-day occurrence several hours before the forecast was incorrectly treated as the forecast outcome"
+    },
+    {
+      "callsign": "QSM2212",
+      "timing_error_seconds_approx": -25578,
+      "problem": "multi-hour negative error consistent with wrong same-day occurrence matching"
+    },
+    {
+      "callsign": "EM805",
+      "timing_error_seconds_approx": -16022,
+      "problem": "multi-hour negative error consistent with wrong same-day occurrence matching"
+    }
+  ],
+  "root_cause": "app/next_hour_shadow.py used _closest_point() over the complete same-day points array returned for callsign + utc_date, without constraining observations to the expectation's predicted time window.",
+  "fix": {
+    "version": "v4.3.2",
+    "strategy": "Only consider route observations inside the stored expectation window plus the existing 15-minute outcome grace on both sides. Legacy expectations without explicit windows remain bounded around predicted_cpa_at. If no observation exists in the bounded interval, keep the outcome unresolved instead of falling back to another same-day leg.",
+    "legacy_cleanup": "Previously resolved outcomes outside their own bounded match interval are quarantined, their original values are preserved in legacy_* forensic fields, and actual_pass/timing_error are removed from scoring."
+  },
+  "regression_requirements": [
+    "A spatially closer same-day route point several hours away must never be selected over an observation inside the expectation interval.",
+    "If only out-of-window same-day points exist, the resolver must return no observation and later mark the outcome unresolved rather than a hit or miss.",
+    "Legacy outcomes outside their expectation interval must be quarantined and excluded from accuracy metrics.",
+    "Legacy outcomes inside the bounded interval must remain scored.",
+    "Missing ADS-B coverage must continue to produce actual_pass = null."
+  ]
+}

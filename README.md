@@ -4,9 +4,21 @@ Plane Alerts is a Telegram-based aircraft-spotting alert system. It combines liv
 
 AI is not part of the live qualification path. It does not decide trajectory, CPA, ETA, pass/no-pass, filter matches, cancellation or notification timing.
 
-Current release candidate: **Plane Alerts v4.3.1**
+Current release candidate: **Plane Alerts v4.3.2**
 
 Telegram: **[@planebotnotifierbot](https://t.me/planebotnotifierbot)**
+
+## v4.3.2 — Bounded Next60 outcome matching
+
+v4.3.2 fixes a Prediction Lab scoring bug that could match a Next60 forecast to the wrong occurrence of the same flight number on the same UTC day.
+
+Outcome resolution is now bounded to the expectation's stored time window plus the existing 15-minute outcome grace on both sides. A spatially close route point several hours before or after the forecast can no longer become the forecast's observed CPA merely because the callsign and UTC date match.
+
+If the bounded interval contains no observed route sample, the outcome remains unresolved and `actual_pass` stays null. Missing or ambiguous ADS-B coverage therefore remains excluded from accuracy scoring instead of being converted into a hit or miss.
+
+Previously resolved outcomes are validated against the same bounded interval. A legacy result that used an out-of-window same-day occurrence is quarantined: its old values are retained in `legacy_*` forensic fields, while its scored pass result and timing error are cleared. This prevents AGY from continuing to learn from multi-hour timing errors created by the old resolver.
+
+This is a Prediction Lab / Next60 shadow-audit correction only. It does not alter live trajectory, CPA, ETA, pass/no-pass, cancellation or Telegram alert timing.
 
 ## v4.3.1 — AGY tooling recovery
 
@@ -203,6 +215,8 @@ pytest -q
 python scripts/benchmark_v42.py
 pip check
 ```
+
+v4.3.2 adds regression coverage for wrong same-day occurrence matching, bounded observation windows, no-observation unresolved behavior, legacy outcome quarantine and preservation of valid in-window outcomes.
 
 v4.3.1 adds regression coverage for real headless denial detection, conversation-ID recovery from complete and truncated stream events, escalating safe-tool guidance, strict-permission preservation and exact-conversation resume wiring.
 
