@@ -73,7 +73,9 @@ if '/app' not in trusted:
     trusted.append('/app')
 data['trustedWorkspaces'] = trusted
 permissions = data.setdefault('permissions', {})
-allow = list(permissions.get('allow') or [])
+# jq is not installed in the AGY image. Remove the stale permission so the
+# model is not encouraged to choose a command that can never succeed.
+allow = [rule for rule in list(permissions.get('allow') or []) if rule != 'command(jq)']
 required = [
     'read_file(/app)',
     'read_file(/agy-state/prediction-lab/context)',
@@ -83,7 +85,6 @@ required = [
     'command(python)',
     'command(python3)',
     'command(grep)',
-    'command(jq)',
     'command(ls)',
     'command(regex:python /app/scripts/agy_record_finding.py.*)',
     'command(regex:python3 /app/scripts/agy_record_finding.py.*)',
@@ -107,8 +108,18 @@ enable = os.environ.get('AGY_GOAL_ENABLED', '').strip().lower() in {'1', 'true',
 if enable:
     was_enabled = bool(supervisor.get('enabled', False))
     supervisor['enabled'] = True
-    goal = os.environ.get('AGY_GOAL', '').strip()
+    configured_goal = os.environ.get('AGY_GOAL', '').strip()
+    goal = configured_goal or str(supervisor.get('goal') or '').strip()
+    tooling_rules = (
+        '[HEADLESS_TOOLING_RULES] In headless audits, prefer view_file, list_dir, grep_search, and write_to_file. '
+        'Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, or compound shell commands. '
+        'For run_command, use exactly one supported command beginning with python3, python, grep, ls, git, pytest, '
+        'or /app/scripts/agy_record_finding.py. Use python3 -c for JSON/data analysis. If a command is denied, do not '
+        'retry the same action through an equivalent shell workaround; continue with the supported tools instead.'
+    )
     if goal:
+        if '[HEADLESS_TOOLING_RULES]' not in goal:
+            goal = f'{goal}\n\n{tooling_rules}'
         supervisor['goal'] = goal
     if not was_enabled:
         supervisor['next_run_at'] = 0
