@@ -49,6 +49,8 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
 
     The caller still has to observe this evidence multiple times. Provider gaps or
     low-confidence miss samples do not themselves become cancellation evidence.
+    A sustained observed turn-away/moving-away signal is itself cancellation
+    evidence even when that manoeuvre lowers the predictor confidence score.
     """
     if getattr(prediction, "stale", False):
         return False
@@ -73,6 +75,13 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
     turning_away = bool(getattr(prediction, "turning_away", False)) or str(getattr(prediction, "state", "")) == "Turning away"
     confidence_score = float(getattr(prediction, "confidence_score", 1.0) if getattr(prediction, "confidence_score", None) is not None else 1.0)
 
+    # Turning aircraft are intentionally penalized by the confidence model. Do
+    # not let that penalty freeze cancellation forever when the physical
+    # evidence already says the aircraft is moving/turning away. The monitor
+    # still requires three independent confirmations before cancelling.
+    if moving_away or turning_away:
+        return True
+
     state = str(getattr(prediction, "state", ""))
     clear_miss_margin_km = max(5.0, radius * 0.50)
     clear_confident_miss = (
@@ -88,7 +97,7 @@ def should_cancel_active_alert(prediction, previous_cpa_km: float | None, alert_
         and confidence_score >= 0.36
     )
 
-    return (moving_away or turning_away or clear_confident_miss or extreme_repeated_miss) and confidence_score >= 0.36
+    return clear_confident_miss or extreme_repeated_miss
 
 
 def advance_cancellation_confirmation(previous_count: int, candidate: bool, *, required: int = CANCELLATION_CONFIRMATIONS_REQUIRED) -> tuple[bool, int]:
