@@ -26,6 +26,7 @@ from app.bot.handlers import register_handlers
 from app.bot.next60 import build_next60_docs, register_next60_handlers
 from app.bot.next60_web import NEXT60_HTML, serialize_next60, validate_telegram_init_data
 from app.bot.profile_handlers import register_profile_handlers
+from app.bot.profile_legacy import register_profile_legacy_handlers
 from app.config import settings
 from app.database import close_db, connect_db, get_db, system_status_col, users_col
 from app.logging_security import configure_secure_logging
@@ -117,6 +118,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # OAuth codes and interactive AGY input are never mistaken for
             # ordinary Plane Alerts setup text.
             register_agy_console_handlers(telegram_app)
+            # Legacy setup/location entry points are routed into profile-aware
+            # flows before both the profile state router and old catch-alls.
+            register_profile_legacy_handlers(telegram_app)
             # v4.3 profile handlers use a negative group so profile callbacks
             # and profile text/location states are handled before legacy catch-alls.
             register_profile_handlers(telegram_app)
