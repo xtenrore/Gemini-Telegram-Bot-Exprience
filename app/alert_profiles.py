@@ -1,8 +1,8 @@
-"""Persistent multi-profile alert configuration for Plane Alerts v4.3.
+"""Persistent multi-profile alert configuration for Plane Alerts v4.4.
 
-The active profile is materialized into the existing ``locations`` and
-``preferences`` collections.  This preserves backward compatibility and keeps
-profile collection reads out of the five-second monitoring hot path.
+The active profile is materialized into the existing locations, preferences and
+camera_profiles collections. This preserves the proven hot-path reads while
+making Guided Setup and Visual Setup two views of the same profile model.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 from app.aircraft.filtering import clear_filter_cache, normalized_filter_config, normalized_rule_config
 from app.config import settings
-from app.database import locations_col, preferences_col, profiles_col, users_col
+from app.database import camera_profiles_col, locations_col, preferences_col, profiles_col, users_col
 
 _PROFILE_ID_RE = re.compile(r"^[0-9a-f]{10}$")
 
@@ -48,18 +48,23 @@ def _strip_mongo(document: dict[str, Any] | None) -> dict[str, Any]:
     return result
 
 
-def config_from_legacy(preferences: dict[str, Any] | None, location: dict[str, Any] | None) -> dict[str, Any]:
+def config_from_legacy(
+    preferences: dict[str, Any] | None,
+    location: dict[str, Any] | None,
+    camera_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     prefs = _strip_mongo(preferences)
     loc = _strip_mongo(location)
+    camera = _strip_mongo(camera_profile)
     prefs["aircraft_filter"] = normalized_filter_config(prefs)
     prefs["filter_rules"] = normalized_rule_config(prefs)
     if loc and "radius_km" not in loc:
         loc["radius_km"] = settings.default_radius_km
-    return {"location": loc, "preferences": prefs}
+    return {"location": loc, "preferences": prefs, "camera": camera}
 
 
 def blank_config_from(base: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Create an independent profile draft while preserving unrelated settings."""
+    """Create an independent profile draft while preserving camera/spotting preferences."""
     config = deepcopy(base or {})
     prefs = dict(config.get("preferences") or {})
     prefs["aircraft_filter"] = {
@@ -68,13 +73,10 @@ def blank_config_from(base: dict[str, Any] | None = None) -> dict[str, Any]:
         "selected_types": [],
         "excluded_types": [],
     }
-    prefs["filter_rules"] = {
-        "profile": {},
-        "categories": {},
-        "aircraft": {},
-    }
+    prefs["filter_rules"] = {"profile": {}, "categories": {}, "aircraft": {}}
     config["preferences"] = prefs
     config["location"] = {}
+    config.setdefault("camera", deepcopy((base or {}).get("camera") or {}))
     return config
 
 
@@ -112,16 +114,17 @@ async def ensure_default_profile(user_id: int) -> dict[str, Any]:
 
     prefs = await preferences_col().find_one({"user_id": int(user_id)})
     loc = await locations_col().find_one({"user_id": int(user_id)})
+    camera = await camera_profiles_col().find_one({"user_id": int(user_id)})
     profile_id = new_profile_id()
     now = _now()
     profile = {
         "user_id": int(user_id),
         "profile_id": profile_id,
         "name": "Default",
-        "config": config_from_legacy(prefs, loc),
+        "config": config_from_legacy(prefs, loc, camera),
         "created_at": now,
         "updated_at": now,
-        "schema_version": 1,
+        "schema_version": 2,
     }
     await profiles_col().insert_one(profile)
     await users_col().update_one(
@@ -133,15 +136,19 @@ async def ensure_default_profile(user_id: int) -> dict[str, Any]:
 
 
 async def migrate_existing_users() -> int:
-    """Idempotently give every configured legacy user an initial profile."""
     migrated = 0
     cursor = users_col().find({"setup_complete": True}, {"user_id": 1, "active_profile_id": 1})
     async for user in cursor:
         uid = int(user["user_id"])
         before = await profiles_col().count_documents({"user_id": uid}, limit=1)
-        await ensure_default_profile(uid)
+        profile = await ensure_default_profile(uid)
         if before == 0:
             migrated += 1
+        elif "camera" not in dict(profile.get("config") or {}):
+            camera = await camera_profiles_col().find_one({"user_id": uid})
+            config = deepcopy(profile.get("config") or {})
+            config["camera"] = _strip_mongo(camera)
+            await save_profile(uid, profile["profile_id"], config=config)
     return migrated
 
 
@@ -156,7 +163,7 @@ async def create_profile(user_id: int, name: str, config: dict[str, Any], *, act
         "config": deepcopy(config),
         "created_at": now,
         "updated_at": now,
-        "schema_version": 1,
+        "schema_version": 2,
     }
     await profiles_col().insert_one(profile)
     if activate:
@@ -168,7 +175,7 @@ async def save_profile(user_id: int, profile_id: str, *, name: str | None = None
     profile = await get_profile(user_id, profile_id)
     if not profile:
         raise KeyError("profile not found")
-    update: dict[str, Any] = {"updated_at": _now()}
+    update: dict[str, Any] = {"updated_at": _now(), "schema_version": 2}
     if name is not None:
         update["name"] = clean_name(name)
     if config is not None:
@@ -186,11 +193,13 @@ async def save_profile(user_id: int, profile_id: str, *, name: str | None = None
 
 
 async def materialize_profile(profile: dict[str, Any]) -> None:
-    """Write active config into legacy collections consumed by the live worker."""
+    """Materialize one active profile into collections consumed by live services."""
     uid = int(profile["user_id"])
     config = deepcopy(profile.get("config") or {})
     prefs = dict(config.get("preferences") or {})
     loc = dict(config.get("location") or {})
+    camera = dict(config.get("camera") or {})
+
     prefs["user_id"] = uid
     prefs["active_profile_id"] = profile["profile_id"]
     prefs["updated_at"] = _now()
@@ -203,6 +212,13 @@ async def materialize_profile(profile: dict[str, Any]) -> None:
         loc.setdefault("radius_km", settings.default_radius_km)
         loc["updated_at"] = _now()
         await locations_col().replace_one({"user_id": uid}, loc, upsert=True)
+
+    if camera:
+        camera["user_id"] = uid
+        camera["updated_at"] = _now()
+        await camera_profiles_col().replace_one({"user_id": uid}, camera, upsert=True)
+    else:
+        await camera_profiles_col().delete_one({"user_id": uid})
     clear_filter_cache()
 
 
@@ -258,11 +274,12 @@ async def delete_profile(user_id: int, profile_id: str) -> dict[str, Any]:
 
 
 async def sync_active_profile_from_legacy(user_id: int) -> dict[str, Any]:
-    """Keep legacy commands/setup changes attached to the current profile."""
+    """Keep Guided Setup/legacy changes attached to the active profile."""
     active = await ensure_default_profile(user_id)
     prefs = await preferences_col().find_one({"user_id": int(user_id)})
     loc = await locations_col().find_one({"user_id": int(user_id)})
-    config = config_from_legacy(prefs, loc)
+    camera = await camera_profiles_col().find_one({"user_id": int(user_id)})
+    config = config_from_legacy(prefs, loc, camera)
     return await save_profile(user_id, active["profile_id"], config=config)
 
 

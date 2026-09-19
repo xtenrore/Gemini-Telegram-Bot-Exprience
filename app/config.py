@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     route_history_days: int = 3
     route_sample_interval_seconds: int = 30
 
+    # Google Contrails API v2. Forecast fetches are background-only and cached
+    # regionally by time/flight level. Missing credentials never disable the
+    # deterministic Open-Meteo upper-air fallback.
+    google_contrails_api_key: str = ""
+    google_contrails_grid_url: str = "https://contrails.googleapis.com/v2/grids"
+
     # AI providers
     gemini_api_key: str = ""
     gemini_api_key_2: str = ""

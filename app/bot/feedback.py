@@ -1,134 +1,132 @@
-"""Handler for notification feedback (Like/Dislike).
+"""Plane Alerts notification feedback with v4.4 forensic linkage.
 
-When a user clicks 👍 or 👎:
-- Persists feedback record in MongoDB.
-- On 👍 (Like): Confirms positive feedback.
-- On 👎 (Dislike):
-  - Triggers incremental re-learning (+25 test planes) for the user's location.
-  - Consults AI Judge to analyze why the notification was undesirable.
+Feedback is first-class evidence. The live callback never waits for an AI
+provider: it links the response to the exact notification/Decision Recorder
+snapshot and schedules any provider relearning as non-critical background work.
 """
-
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from telegram import Update
 from telegram.constants import ParseMode
 
-from app.aircraft.ai_judge import ai_judge
 from app.aircraft.learner import provider_learner
 from app.bot.keyboards import CB_FB_DISLIKE_PREFIX, CB_FB_LIKE_PREFIX
-from app.database import (
-    feedback_col,
-    locations_col,
-    notification_history_col,
-)
+from app.database import feedback_col, locations_col, notification_history_col
+from app.decision_recorder import record_decision
 
 logger = logging.getLogger(__name__)
 
 
 async def handle_feedback_callback(update: Update) -> None:
-    """Process callback query for notification like/dislike buttons."""
     query = update.callback_query
     if query is None or query.data is None:
         return
-
-    await query.answer()  # Acknowledge immediately
+    await query.answer()  # Acknowledge Telegram immediately.
     user = update.effective_user
     if user is None:
         return
 
     data = query.data
-    user_id = user.id
-
     if data.startswith(CB_FB_LIKE_PREFIX):
-        notif_id = data[len(CB_FB_LIKE_PREFIX):]
-        await _on_like(query, user_id, notif_id)
+        await _record_feedback(query, user.id, data[len(CB_FB_LIKE_PREFIX):], "like")
     elif data.startswith(CB_FB_DISLIKE_PREFIX):
-        notif_id = data[len(CB_FB_DISLIKE_PREFIX):]
-        await _on_dislike(query, user_id, notif_id)
+        await _record_feedback(query, user.id, data[len(CB_FB_DISLIKE_PREFIX):], "dislike")
 
 
-async def _on_like(query: Any, user_id: int, notif_id: str) -> None:
-    """User liked the notification."""
+async def _notification(user_id: int, notif_id: str) -> dict[str, Any]:
+    return (
+        await notification_history_col().find_one({"_id": notif_id, "user_id": int(user_id)})
+        or await notification_history_col().find_one({"user_id": int(user_id), "aircraft_icao24": notif_id})
+        or {}
+    )
+
+
+async def _record_feedback(query: Any, user_id: int, notif_id: str, feedback: str) -> None:
+    notif = await _notification(user_id, notif_id)
+    linked_decision = str(notif.get("decision_record_id") or "")
+    label = "helpful" if feedback == "like" else "non_helpful"
+    now = datetime.now(timezone.utc)
+
     await feedback_col().update_one(
-        {"user_id": user_id, "notification_id": notif_id},
-        {
-            "$set": {
-                "user_id": user_id,
-                "notification_id": notif_id,
-                "feedback": "like",
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
+        {"user_id": int(user_id), "notification_id": notif_id},
+        {"$set": {
+            "user_id": int(user_id),
+            "notification_id": notif_id,
+            "feedback": feedback,  # Backward-compatible value.
+            "feedback_label": label,
+            "decision_record_id": linked_decision or None,
+            "aircraft_icao24": notif.get("aircraft_icao24"),
+            "aircraft_type": notif.get("aircraft_type"),
+            "projected_closest_km": notif.get("projected_closest_km"),
+            "observed_closest_km": notif.get("observed_closest_km"),
+            "prediction_confidence": notif.get("prediction_confidence"),
+            "trajectory_state": notif.get("trajectory_state"),
+            "updated_at": now,
+        }},
         upsert=True,
     )
 
-    if query.message:
-        await query.message.reply_text(
-            "👍 Thank you! Your feedback helps keep alerts accurate.",
-            parse_mode=ParseMode.HTML,
+    feedback_decision = record_decision(
+        subsystem="user_feedback",
+        event=label,
+        state_key=f"feedback:{int(user_id)}:{notif_id}",
+        state=label,
+        decision=label,
+        reason_code="user_marked_non_helpful" if feedback == "dislike" else "user_marked_helpful",
+        user_id=int(user_id),
+        notification_id=notif_id,
+        force=True,
+        evidence={
+            "linked_decision_record_id": linked_decision or None,
+            "flight_number": notif.get("callsign"),
+            "icao24": notif.get("aircraft_icao24"),
+            "aircraft_type": notif.get("aircraft_type"),
+            "projected_closest_km": notif.get("projected_closest_km"),
+            "observed_closest_km": notif.get("observed_closest_km"),
+            "prediction_confidence": notif.get("prediction_confidence"),
+            "trajectory_state": notif.get("trajectory_state"),
+            "notified_at": notif.get("notified_at"),
+        },
+    )
+    if feedback_decision:
+        await feedback_col().update_one(
+            {"user_id": int(user_id), "notification_id": notif_id},
+            {"$set": {"feedback_decision_record_id": feedback_decision}},
         )
+
+    if feedback == "dislike":
+        # Relearning is useful evidence collection, but it is never allowed to
+        # hold the Telegram callback open or become alert-decision authority.
+        loc = await locations_col().find_one({"user_id": int(user_id)}, {"geohash": 1})
+        geohash = str((loc or {}).get("geohash") or "")
+        if geohash:
+            async def relearn() -> None:
+                try:
+                    await provider_learner.trigger_relearning(
+                        user_id=int(user_id), geohash=geohash, extra_planes=25
+                    )
+                except Exception:
+                    logger.exception("feedback_relearning_failed user=%s", user_id)
+            asyncio.create_task(relearn(), name=f"feedback-relearn:{user_id}")
+
+    if query.message:
+        text = (
+            "Feedback recorded. This result is linked to the decision evidence for reliability review."
+            if feedback == "dislike"
+            else "Thank you. This successful result will also be retained as calibration evidence."
+        )
+        await query.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+# Backward-compatible helpers retained for tests/callers.
+async def _on_like(query: Any, user_id: int, notif_id: str) -> None:
+    await _record_feedback(query, user_id, notif_id, "like")
 
 
 async def _on_dislike(query: Any, user_id: int, notif_id: str) -> None:
-    """User disliked the notification — trigger re-learning + AI investigation."""
-    await feedback_col().update_one(
-        {"user_id": user_id, "notification_id": notif_id},
-        {
-            "$set": {
-                "user_id": user_id,
-                "notification_id": notif_id,
-                "feedback": "dislike",
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
-        upsert=True,
-    )
-
-    # Get user location for geohash
-    loc = await locations_col().find_one({"user_id": user_id})
-    geohash = loc.get("geohash", "") if loc else ""
-
-    # Trigger re-learning (+25 test planes)
-    if geohash:
-        await provider_learner.trigger_relearning(
-            user_id=user_id, geohash=geohash, extra_planes=25
-        )
-
-    # Lookup notification details for AI investigation
-    notif_doc = await notification_history_col().find_one(
-        {"_id": notif_id}
-    ) or await notification_history_col().find_one(
-        {"user_id": user_id, "aircraft_icao24": notif_id}
-    )
-
-    ai_analysis = ""
-    if notif_doc and ai_judge.can_call():
-        try:
-            icao = notif_doc.get("aircraft_icao24", notif_id)
-            ac_type = notif_doc.get("aircraft_type", "Unknown")
-            dist = notif_doc.get("distance_km", 0.0)
-            providers = notif_doc.get("reporting_providers", ["all"])
-
-            ai_analysis = await ai_judge.analyze_dislike(
-                icao24=icao,
-                aircraft_type=ac_type,
-                distance_km=dist,
-                providers_reporting=providers,
-                user_feedback="User marked this alert as not helpful or wrong",
-            )
-            logger.info("AI dislike analysis for user %d: %s", user_id, ai_analysis)
-        except Exception as exc:
-            logger.debug("AI dislike analysis error: %s", exc)
-
-    reply_msg = (
-        "🔄 <b>Feedback recorded!</b>\n\n"
-        "We'll run extra provider checks (+25 test planes) to improve accuracy in your area.\n"
-    )
-    if ai_analysis and ai_analysis != "UNKNOWN":
-        reply_msg += f"\n🤖 <i>AI Analysis: {ai_analysis}</i>"
-
-    if query.message:
-        await query.message.reply_text(reply_msg, parse_mode=ParseMode.HTML)
+    await _record_feedback(query, user_id, notif_id, "dislike")

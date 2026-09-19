@@ -1,10 +1,4 @@
-"""Small extension around the AGY worker for raw TUI key injection.
-
-The existing /console/input endpoint is line-oriented and always appends a
-newline, which makes arrow-key navigation impossible because ESC[A would be
-followed by Enter. This endpoint writes a tightly allowlisted key sequence
-straight to the already-running PTY and nothing else.
-"""
+"""Small extension around the AGY worker for raw TUI key injection."""
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +7,15 @@ import os
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 
-from app.agy_worker import _auth, app, console
+from app.agy_worker import _auth, app, console, supervisor
+from app.agy_supervisor_goal_v44 import install_agy_supervisor_goal_v44
 from app.agy_tool_recovery_v431 import install_tool_recovery_v431
 
 # Install before FastAPI startup creates/runs the supervisor task. Strict
 # permissions remain in force, but a soft-denied shell choice can now resume
 # the same Antigravity conversation immediately instead of waiting minutes.
 install_tool_recovery_v431()
+install_agy_supervisor_goal_v44(supervisor)
 
 
 class KeyInput(BaseModel):
