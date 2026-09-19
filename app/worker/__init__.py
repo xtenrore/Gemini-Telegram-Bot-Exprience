@@ -44,3 +44,9 @@ if "pytest" not in sys.modules:
     from app.worker.critical_timing import install_critical_timing_guards
 
     install_critical_timing_guards()
+
+    # v4.2.3 removes database fan-out and non-critical learning work from the
+    # five-second alert path, and bounds a single shared provider refresh.
+    from app.worker.cadence_guard_v423 import install_cadence_guard_v423
+
+    install_cadence_guard_v423()

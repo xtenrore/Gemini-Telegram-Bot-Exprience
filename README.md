@@ -4,9 +4,24 @@ Plane Alerts is an aircraft-spotting alert system designed to predict whether an
 
 Live ADS-B motion, deterministic trajectory geometry, CPA/ETA calculations, flight-number route history, terminal-arrival logic, and prediction confidence drive the alert decision. AI is limited to investigation and explanation; it does not control live trajectory, CPA, ETA, pass/no-pass, qualification, cancellation, or notification timing.
 
-Current production release: **Plane Alerts v4.2.2**
+Current production release: **Plane Alerts v4.2.3**
 
 Telegram: **[@planebotnotifierbot](https://t.me/planebotnotifierbot)**
+
+## v4.2.3 — Five-second cadence latency guard
+
+v4.2.3 removes avoidable database and provider-learning latency from the alert-critical monitoring path after production telemetry showed nominal five-second checks frequently stretching to roughly 6–9 seconds.
+
+Changes:
+
+- approach state is batch-loaded once per user and cycle instead of issuing one sequential MongoDB read for every nearby aircraft;
+- active-user locations and preferences are loaded with bounded set queries instead of per-user query fan-out;
+- provider-learning persistence and conflict analysis run through a small fixed background queue so they cannot hold up live CPA processing;
+- a shared ADS-B refresh receives a strict foreground time budget; if it overruns, a recent non-empty snapshot may be reused while its position age continues increasing normally;
+- existing stale-position protection remains authoritative, so delayed provider data cannot silently become fresh data;
+- route qualification, CPA calculations, ETA logic, confidence thresholds, cancellation rules, and alert decisions are unchanged.
+
+No paid AI/API dependency is introduced.
 
 ## v4.2.2 — AGY command resilience
 
