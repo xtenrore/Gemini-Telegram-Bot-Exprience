@@ -37,7 +37,7 @@ def test_native_next60_compact_line_and_buttons():
     assert row[1].callback_data == "n60_more:THY1VP"
 
 
-def test_history_shadow_without_icao_has_no_fake_adsb_target():
+def test_history_shadow_without_icao_still_has_adsb_callsign_target():
     now, doc = _doc(
         aircraft_icao24=None,
         aircraft_type=None,
@@ -49,8 +49,10 @@ def test_history_shadow_without_icao_has_no_fake_adsb_target():
     assert "THY1VP" in text
     assert markup is not None
     row = markup.inline_keyboard[0]
-    assert len(row) == 1
-    assert row[0].text == "More Info · THY1VP"
+    assert len(row) == 2
+    assert row[0].text == "ADSB · THY1VP"
+    assert row[0].url == "https://adsb.lol/?filterCallSign=%5ETHY1VP%24"
+    assert row[1].text == "More Info · THY1VP"
 
 
 def test_more_info_contains_deterministic_forecast_fields():
