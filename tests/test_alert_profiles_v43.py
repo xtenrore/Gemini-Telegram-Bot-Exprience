@@ -80,11 +80,13 @@ def db(monkeypatch):
         "locations": Collection(),
         "preferences": Collection(),
         "profiles": Collection(),
+        "camera_profiles": Collection(),
     }
     monkeypatch.setattr(profiles, "users_col", lambda: store["users"])
     monkeypatch.setattr(profiles, "locations_col", lambda: store["locations"])
     monkeypatch.setattr(profiles, "preferences_col", lambda: store["preferences"])
     monkeypatch.setattr(profiles, "profiles_col", lambda: store["profiles"])
+    monkeypatch.setattr(profiles, "camera_profiles_col", lambda: store["camera_profiles"])
     return store
 
 
