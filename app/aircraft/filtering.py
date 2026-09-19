@@ -19,6 +19,16 @@ _SYSTEM_RULE: dict[str, Any] = {
     "radius_km": None,
 }
 
+# These airlines run both passenger and cargo operations under the same ICAO
+# operator identity. Callsign alone cannot safely classify an individual flight
+# as cargo, so role inference deliberately does not add the Cargo category for
+# them. Dedicated cargo operators can still add Cargo deterministically.
+_MIXED_PASSENGER_CARGO_OPERATORS = frozenset({"THY", "KAL", "ETD"})
+
+
+def _role_operator(operator_icao: str | None) -> str | None:
+    return None if operator_icao in _MIXED_PASSENGER_CARGO_OPERATORS else operator_icao
+
 
 @dataclass(frozen=True, slots=True)
 class EffectiveRule:
@@ -60,12 +70,12 @@ class CompiledAircraftFilter:
             return True
         if code in self.excluded_types:
             return False
-        return bool(self.selected_categories.intersection(categories_for(code, operator_icao)))
+        return bool(self.selected_categories.intersection(categories_for(code, _role_operator(operator_icao))))
 
     def resolved_rule(self, code: str, operator_icao: str | None) -> EffectiveRule:
         merged = dict(_SYSTEM_RULE)
         _apply(merged, self.profile_rule)
-        category = primary_category(code, operator_icao)
+        category = primary_category(code, _role_operator(operator_icao))
         _apply(merged, self.category_rules.get(category, {}))
         _apply(merged, self.aircraft_rules.get(code, {}))
         return EffectiveRule(
@@ -80,7 +90,7 @@ class CompiledAircraftFilter:
     def evaluate(self, aircraft: Any, base_radius_km: float) -> FilterDecision:
         code = str(getattr(aircraft, "aircraft_type", "") or "UNKNOWN").strip().upper() or "UNKNOWN"
         operator = operator_from_aircraft(aircraft)
-        category = primary_category(code, operator)
+        category = primary_category(code, _role_operator(operator))
         radius = float(base_radius_km)
         if not self.type_selected(code, operator):
             return FilterDecision(False, radius, category, operator, "aircraft")
@@ -121,7 +131,7 @@ def _number_or_none(value: Any) -> float | None:
 
 
 def _apply(target: dict[str, Any], override: dict[str, Any]) -> None:
-    # Missing keys mean "Use Parent Setting".  Explicit None at the profile
+    # Missing keys mean "Use Parent Setting". Explicit None at the profile
     # level is meaningful (for example no altitude ceiling), so it is retained.
     for key in _SYSTEM_RULE:
         if key in override:
