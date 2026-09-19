@@ -124,12 +124,11 @@ async def profile_mode_callback(update: Update, context: ContextTypes.DEFAULT_TY
         active = await ensure_default_profile(user.id)
         await _show_mode(update, str(active["profile_id"]), new_profile=True)
     elif data.startswith("pf44:activate:"):
-        await query.answer()
         profile_id = data.split(":", 2)[2]
         profile = await activate_profile(user.id, profile_id)
+        await query.answer(f"Active: {profile.get('name')}")
         await guided._clear_state(user.id)
         await _render_profiles_v44(update, user.id)
-        await query.answer(f"Active: {profile.get('name')}")
     elif data.startswith("pf44:edit:"):
         profile_id = data.split(":", 2)[2]
         if await get_profile(user.id, profile_id) is None:
