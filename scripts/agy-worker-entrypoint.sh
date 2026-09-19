@@ -115,13 +115,14 @@ if enable:
         'For run_command, use exactly one supported command beginning with python3, python, grep, ls, git, pytest, '
         'or /app/scripts/agy_record_finding.py. NEVER use run_command to create or modify a file. For any multi-line '
         'analysis script, call write_to_file first, then make a separate run_command call containing only '
-        '`python3 /path/to/script.py`. Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, sh, bash, or '
-        'other compound shell syntax. The AGY image is intentionally minimal: use the Python standard library only '
-        'unless a package import has already been proven to work. Do not assume numpy, pandas, scipy, or other '
-        'optional packages exist, and do not pip-install packages at runtime. If an optional import fails, immediately '
-        'rewrite the analysis with the standard library. A permission denial is NOT task completion. Never retry a '
-        'denied operation through an equivalent shell workaround; on the next goal cycle continue using only the '
-        'supported built-in tools and single allowlisted commands.'
+        '`python3 /path/to/script.py`. Do not use jq, sed, cat/heredocs, find, head, tail, shell redirection, pipes, '
+        '&&, ||, semicolon command chains, sh, bash, or other compound shell syntax. The AGY image is intentionally '
+        'minimal: use the Python standard library only unless a package import has already been proven to work. '
+        'Do not assume numpy, pandas, scipy, or other optional packages exist, and do not pip-install packages at runtime. '
+        'If an optional import fails, immediately rewrite the analysis with the standard library. A permission denial '
+        'is NOT task completion. The Plane Alerts supervisor will immediately resume the same conversation with '
+        'corrective tooling guidance after a soft denial. Never retry a denied operation through an equivalent shell '
+        'workaround; continue using only the supported built-in tools and single allowlisted commands.'
     )
     if goal:
         # Replace any persisted older tooling block on every restart so the
@@ -134,7 +135,7 @@ if enable:
 
     # A tooling-policy change must run once immediately even when the previous
     # denied CLI cycle incorrectly persisted a normal hourly completion time.
-    tooling_policy_version = 2
+    tooling_policy_version = 3
     if int(supervisor.get('tooling_policy_version', 0) or 0) != tooling_policy_version:
         supervisor['tooling_policy_version'] = tooling_policy_version
         supervisor['next_run_at'] = 0

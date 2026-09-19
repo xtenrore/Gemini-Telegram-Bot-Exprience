@@ -4,9 +4,19 @@ Plane Alerts is a Telegram-based aircraft-spotting alert system. It combines liv
 
 AI is not part of the live qualification path. It does not decide trajectory, CPA, ETA, pass/no-pass, filter matches, cancellation or notification timing.
 
-Current release candidate: **Plane Alerts v4.3**
+Current release candidate: **Plane Alerts v4.3.1**
 
 Telegram: **[@planebotnotifierbot](https://t.me/planebotnotifierbot)**
+
+## v4.3.1 — AGY tooling recovery
+
+v4.3.1 is a reliability update for the private Prediction Lab worker. Strict headless permissions remain unchanged, but an unsupported shell-style command no longer wastes a complete audit cycle.
+
+When Antigravity soft-denies a command, the supervisor now recovers the conversation identifier from the streamed result and immediately resumes that exact conversation with corrective tooling guidance. The audit keeps its context and continues without the previous multi-minute permission backoff.
+
+Recovery guidance becomes stricter after repeated mistakes. File inspection is redirected to the built-in read/list/search tools, while custom multi-step analysis is redirected to `write_to_file` plus one standard-library `python3` script. After repeated failures, inspection through `run_command` is disabled for the rest of that goal. Recovery is bounded to four turns before a short retry.
+
+The update does **not** add `command(*)`, `--dangerously-skip-permissions`, unrestricted shell access, `bash`, pipes or command chaining. The AGY health response also exposes the current same-conversation recovery mode and recovery count for production verification.
 
 ## v4.3 — Profiles and aircraft filtering
 
@@ -194,7 +204,9 @@ python scripts/benchmark_v42.py
 pip check
 ```
 
-v4.3 adds regression coverage for profile migration, persistence, activation, deletion fallback, duplication, multi-user isolation, logical All Aircraft behavior, category/type selection, rule inheritance, altitude filtering, operator aliases, allow/block lists, unknown aircraft/operator behavior, search and hot-loop filter performance.
+v4.3.1 adds regression coverage for real headless denial detection, conversation-ID recovery from complete and truncated stream events, escalating safe-tool guidance, strict-permission preservation and exact-conversation resume wiring.
+
+v4.3 includes regression coverage for profile migration, persistence, activation, deletion fallback, duplication, multi-user isolation, logical All Aircraft behavior, category/type selection, rule inheritance, altitude filtering, operator aliases, allow/block lists, unknown aircraft/operator behavior, search and hot-loop filter performance.
 
 Changes are not merged when CI fails.
 
@@ -202,7 +214,7 @@ Changes are not merged when CI fails.
 
 Production runs on Railway with MongoDB persistence. The main service runs Telegram, shared ADS-B polling, deterministic prediction, route history, photography intelligence and Next60. A separate AGY service performs post-outcome investigation.
 
-Deployment is separate from feature implementation. This v4.3 branch is not deployed simply because the code or pull request exists.
+Deployment is gated by the repository CI workflow. A branch or pull request is not treated as production simply because the code exists.
 
 ## Running locally
 

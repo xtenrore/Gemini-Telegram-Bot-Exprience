@@ -14,11 +14,12 @@ from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 
 from app.agy_worker import _auth, app, console
-from app.agy_permission_guard_v422 import install_permission_guard_v422
+from app.agy_tool_recovery_v431 import install_tool_recovery_v431
 
-# Install before FastAPI startup creates/runs the supervisor task. This keeps
-# strict headless permissions while making denied tool actions retryable.
-install_permission_guard_v422()
+# Install before FastAPI startup creates/runs the supervisor task. Strict
+# permissions remain in force, but a soft-denied shell choice can now resume
+# the same Antigravity conversation immediately instead of waiting minutes.
+install_tool_recovery_v431()
 
 
 class KeyInput(BaseModel):
