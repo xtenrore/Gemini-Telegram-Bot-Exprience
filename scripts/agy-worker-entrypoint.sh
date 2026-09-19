@@ -112,14 +112,21 @@ if enable:
     goal = configured_goal or str(supervisor.get('goal') or '').strip()
     tooling_rules = (
         '[HEADLESS_TOOLING_RULES] In headless audits, prefer view_file, list_dir, grep_search, and write_to_file. '
-        'Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, or compound shell commands. '
-        'For run_command, use exactly one supported command beginning with python3, python, grep, ls, git, pytest, '
-        'or /app/scripts/agy_record_finding.py. Use python3 -c for JSON/data analysis. If a command is denied, do not '
-        'retry the same action through an equivalent shell workaround; continue with the supported tools instead.'
+        'For run_command, use one supported command beginning with python3, python, grep, ls, git, pytest, or '
+        '/app/scripts/agy_record_finding.py. Do not use jq, sed, cat/heredocs, shell redirection, pipes, &&, or other '
+        'compound shell syntax. The AGY image is intentionally minimal: use the Python standard library only unless '
+        'a package import has already been proven to work. Do not assume numpy, pandas, scipy, or other optional '
+        'packages exist, and do not pip-install packages at runtime. If an optional import fails, immediately rewrite '
+        'the analysis with the standard library. If a command is denied, do not retry it through an equivalent shell '
+        'workaround; continue with the supported built-in tools instead.'
     )
     if goal:
-        if '[HEADLESS_TOOLING_RULES]' not in goal:
-            goal = f'{goal}\n\n{tooling_rules}'
+        # Replace any persisted older tooling block on every restart so the
+        # supervisor cannot keep stale command guidance from a previous image.
+        marker = '\n\n[HEADLESS_TOOLING_RULES]'
+        if marker in goal:
+            goal = goal.split(marker, 1)[0].rstrip()
+        goal = f'{goal}\n\n{tooling_rules}'
         supervisor['goal'] = goal
     if not was_enabled:
         supervisor['next_run_at'] = 0

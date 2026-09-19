@@ -126,8 +126,19 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     # Historical routing is keyed by flight callsign + day. ICAO24/registration
     # may be retained diagnostically but is intentionally not part of the key.
     await db["flight_route_samples"].create_index([("callsign", 1), ("utc_date", 1)], unique=True)
+    # Prediction Lab scans all recent flight numbers by day. The unique
+    # callsign+day index cannot serve a utc_date-only query because callsign is
+    # its leftmost field, so keep this dedicated date index as well.
+    await db["flight_route_samples"].create_index("utc_date")
     await db["flight_route_samples"].create_index("expires_at", expireAfterSeconds=0)
     await db["flight_route_samples"].create_index("updated_at")
+    # Shadow evaluators repeatedly select pending outcomes by status/time. These
+    # indexes keep the private AGY audit scans from competing with the live
+    # alert worker for Mongo resources.
+    await db["prediction_lab_audit"].create_index([("kind", 1), ("status", 1), ("utc_date", 1)])
+    await db["prediction_lab_audit"].create_index([("kind", 1), ("status", 1), ("window_end", 1)])
+    await db["prediction_lab_audit"].create_index("expires_at", expireAfterSeconds=0)
+    await db["prediction_sentinel_routes"].create_index("utc_date")
     await db["system_status"].create_index("updated_at")
     await db["admin_audit"].create_index("created_at")
     await db["admin_audit"].create_index("target_user_id")
