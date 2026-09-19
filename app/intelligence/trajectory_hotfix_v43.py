@@ -187,7 +187,21 @@ def predict_trajectory_v43(
         and closest_h >= min(base.current_distance_km, alert_radius_km * 1.1)
     )
 
-    if base.stale:
+    directly_inside = (
+        not base.stale
+        and base.current_distance_km <= float(alert_radius_km)
+    )
+    if directly_inside:
+        # Preserve the pre-existing reliability guarantee: after an ADS-B gap,
+        # a fresh observed position physically inside the requested radius is
+        # stronger evidence than a projected CPA that is already behind us.
+        enters = True
+        already_passed = False
+        turning_away = False
+        entry_t = 0.0
+        state = "Passing nearby"
+        reason = "fresh ADS-B position is directly inside the configured alert radius"
+    elif base.stale:
         state, reason = "Prediction uncertain", "ADS-B position is stale"
     elif turning_away:
         state = "Turning away"
