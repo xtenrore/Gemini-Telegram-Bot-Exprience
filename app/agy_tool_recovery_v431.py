@@ -122,8 +122,9 @@ def recovery_prompt(attempt: int) -> str:
         "FINAL TOOLING RECOVERY MODE: stop using run_command for inspection for the remainder of this goal. "
         "Use only view_file, list_dir, grep_search, write_to_file, and a single python3 script invocation for custom "
         "analysis. The only other run_command use permitted for this goal is the dedicated agy_record_finding.py "
-        "recorder, or standalone git/pytest if the original goal truly requires them. Do not use shell utilities or "
-        "compound shell syntax. Continue the same audit from the exact point where the denied action occurred."
+        "recorder, or standalone git/pytest if the original goal truly requires them. Never use cat, find, sed, "
+        "head, tail, jq, pipes, redirects, heredocs, sh, bash, or compound shell syntax. Continue the same audit "
+        "from the exact point where the denied action occurred."
     )
 
 
