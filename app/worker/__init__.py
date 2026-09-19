@@ -50,3 +50,9 @@ if "pytest" not in sys.modules:
     from app.worker.cadence_guard_v423 import install_cadence_guard_v423
 
     install_cadence_guard_v423()
+
+    # v4.2.4 prevents normal scheduler jitter from turning a near-five-second
+    # evaluation interval into a skipped cycle and roughly ten-second gap.
+    from app.worker.cadence_due_guard_v424 import install_cadence_due_guard_v424
+
+    install_cadence_due_guard_v424()
