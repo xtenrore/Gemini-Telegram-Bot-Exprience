@@ -23,15 +23,7 @@ def _history_quality_reason(days: int, spread_s: float) -> str:
     return ""
 
 
-def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
-    effective_now = now or datetime.now(timezone.utc)
-    counters = dict(base.update_next_hour_shadow(effective_now))
-    counters.setdefault("rejected", 0)
-
-    database = base._db()
-    if database is None:
-        return counters
-
+def _reject_low_quality(database, effective_now: datetime) -> int:
     audit = database["prediction_lab_audit"]
     today = effective_now.date().isoformat()
     cursor = audit.find(
@@ -48,6 +40,7 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
         },
     )
 
+    rejected = 0
     for expectation in cursor:
         reason = _history_quality_reason(
             int(expectation.get("historical_days") or 0),
@@ -69,6 +62,19 @@ def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
                 }
             },
         )
-        counters["rejected"] += int(result.modified_count or 0)
+        rejected += int(result.modified_count or 0)
+    return rejected
 
+
+def update_next_hour_shadow(now: datetime | None = None) -> dict[str, int]:
+    effective_now = now or datetime.now(timezone.utc)
+    database = base._db()
+
+    # Reject already-pending bad expectations before the base resolver has a
+    # chance to score them. Then run the normal shadow audit and reject any new
+    # low-quality expectations it created in this same cycle.
+    rejected_before = _reject_low_quality(database, effective_now) if database is not None else 0
+    counters = dict(base.update_next_hour_shadow(effective_now))
+    rejected_after = _reject_low_quality(database, effective_now) if database is not None else 0
+    counters["rejected"] = rejected_before + rejected_after
     return counters
