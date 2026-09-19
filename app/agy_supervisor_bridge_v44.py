@@ -7,10 +7,15 @@ without receiving credentials, exact observer coordinates, or live authority.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app import agy_prediction_bridge as base
+
+_SHADOW_FILE = base.LAB_DIR / "shadow-reviews.jsonl"
+_SHADOW_CURSOR = base.LAB_DIR / "shadow-review-cursor.json"
 
 
 def _decision_groups(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -46,6 +51,53 @@ def _decision_groups(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
         "ambiguous_shadow_candidates": ambiguous[:120],
         "successful_samples": successful[:120],
     }
+
+
+def _load_shadow_cursor() -> int:
+    try:
+        return int(json.loads(_SHADOW_CURSOR.read_text(encoding="utf-8")).get("line", 0) or 0)
+    except Exception:
+        return 0
+
+
+def sync_shadow_reviews() -> int:
+    """Move isolated AGY shadow opinions into Mongo without granting AGY DB access."""
+    if not _SHADOW_FILE.exists():
+        return 0
+    database = base._db()
+    if database is None:
+        return 0
+    cursor = _load_shadow_cursor()
+    lines = _SHADOW_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    if cursor >= len(lines):
+        return 0
+    published = 0
+    for index, raw in enumerate(lines[cursor:], start=cursor + 1):
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        decision_id = str(item.get("decision_id") or "")
+        if not decision_id:
+            continue
+        # Parent verifies the referenced deterministic record exists. A made-up
+        # id from AGY is ignored rather than becoming audit truth.
+        if database["decision_records"].find_one({"decision_id": decision_id}, {"_id": 1}) is None:
+            continue
+        clean = {
+            **item,
+            "authoritative": False,
+            "affects_live_decision": False,
+            "synced_at": datetime.now(timezone.utc),
+        }
+        database["agy_shadow_reviews"].update_one(
+            {"decision_id": decision_id},
+            {"$set": clean},
+            upsert=True,
+        )
+        published += 1
+        base._atomic_json(_SHADOW_CURSOR, {"line": index, "updated_at": datetime.now(timezone.utc).isoformat()})
+    return published
 
 
 def build_supervisor_context_snapshot() -> dict[str, Any]:
