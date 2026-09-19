@@ -48,7 +48,7 @@ async def connect_db(max_retries: int = 5, retry_delay: float = 2.0, timeout_ms:
                 maxPoolSize=5,
                 minPoolSize=0,
                 maxIdleTimeMS=60000,
-                appname="plane-spotting-intelligence-v3.6",
+                appname="plane-alerts-v4.3",
             )
             _db = _client[settings.database_name]
             await _client.admin.command("ping")
@@ -88,6 +88,7 @@ def get_db() -> AsyncIOMotorDatabase:
 def users_col() -> AsyncIOMotorCollection: return get_db()["users"]
 def locations_col() -> AsyncIOMotorCollection: return get_db()["locations"]
 def preferences_col() -> AsyncIOMotorCollection: return get_db()["preferences"]
+def profiles_col() -> AsyncIOMotorCollection: return get_db()["profiles"]
 def notification_history_col() -> AsyncIOMotorCollection: return get_db()["notification_history"]
 def user_state_col() -> AsyncIOMotorCollection: return get_db()["user_state"]
 def provider_learning_col() -> AsyncIOMotorCollection: return get_db()["provider_learning"]
@@ -110,6 +111,10 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["locations"].create_index("user_id")
     await db["locations"].create_index("geohash")
     await db["preferences"].create_index("user_id", unique=True)
+    # v4.3 alert profiles are user-isolated and addressed by a compact immutable
+    # profile id.  Active profile id lives on the existing user document.
+    await db["profiles"].create_index([("user_id", 1), ("profile_id", 1)], unique=True)
+    await db["profiles"].create_index([("user_id", 1), ("created_at", 1)])
     await db["user_state"].create_index("user_id", unique=True)
     await db["notification_history"].create_index([("user_id", 1), ("aircraft_icao24", 1), ("cooldown_until", 1)])
     await db["notification_history"].create_index("cooldown_until", expireAfterSeconds=86400)
